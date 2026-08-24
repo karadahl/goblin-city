@@ -79,7 +79,9 @@
     "migrate:production:payment-recovery": "node --experimental-strip-types scripts/migrate.ts --target production --migration payment-recovery",
     "migrate:production:room-orientation": "node --experimental-strip-types scripts/migrate.ts --target production --migration room-orientation",
     "migrate:production:public-snapshots": "node --experimental-strip-types scripts/migrate.ts --target production --migration public-snapshots",
-    "migrate:production:payment-recovery-trigger-repair": "node --experimental-strip-types scripts/migrate.ts --target production --migration payment-recovery-trigger-repair"
+    "migrate:production:payment-recovery-trigger-repair": "node --experimental-strip-types scripts/migrate.ts --target production --migration payment-recovery-trigger-repair",
+    "bootstrap:preview": "node --experimental-strip-types scripts/bootstrap.ts preview",
+    "bootstrap:production": "node --experimental-strip-types scripts/bootstrap.ts production"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",
