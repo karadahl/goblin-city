@@ -1,6 +1,18 @@
 import { randomBytes } from 'node:crypto'
 import type { Context, Hono } from 'hono'
+import {
+  browserCookieProofLocation,
+  browserSessionCookieName,
+  clearBrowserSessionCookie,
+  inspectBrowserCookieProof,
+  newBrowserSessionCookie,
+  readBrowserSessionCookie,
+  setBrowserSessionCookie,
+  type BrowserCookieProof,
+  type BrowserSessionCookie,
+} from './browser-cookie-proof.ts'
 import { trustedBrowserForm } from './browser-form.ts'
+import { markBrowserRefusal, type BrowserRefusalReason } from './browser-refusal.ts'
 import {
   HANDLE_RE,
   isReservedHandle,
@@ -41,6 +53,7 @@ import { newRecoveryCodeSet, type RecoveryCodeSet } from './oauth-recovery.ts'
 import {
   postgresOAuthStore,
   resolveOAuthAccessTokenPassive,
+  type AuthorizationRequestInput,
   type AuthorizationRequestRecord,
 } from './oauth-store.ts'
 
@@ -67,6 +80,8 @@ export type {
 export { collectRecoveryCodeSet } from './oauth-recovery.ts'
 
 const SESSION_COOKIE = '__Host-1f3d9_oauth'
+const SESSION_COOKIE_FIELD = 'session_cookie'
+const SESSION_COOKIE_SLOT = /^[0-9a-f]{32}$/u
 const MAX_FORM_BYTES = 8_192
 const MAX_UI_LOCALES = 256
 const UI_LOCALES = /^[A-Za-z0-9-]{1,35}(?: [A-Za-z0-9-]{1,35}){0,9}$/
@@ -168,36 +183,27 @@ function registeredCallbackOrigin(redirectUri: string): string {
   return redirect.origin
 }
 
-function browserError(c: Context, status: 400 | 403 | 409 | 429 | 503, message: string) {
+function browserError(
+  c: Context,
+  status: 400 | 403 | 409 | 429 | 503,
+  reason: BrowserRefusalReason,
+  message: string,
+  retryHref?: string,
+) {
+  const reference = markBrowserRefusal(c, status, reason)
+  const nextStep = retryHref
+    ? `<p><a href="${escapeHtml(retryHref)}">Start again</a></p>`
+    : '<p class="muted">You can close this page safely. Nothing was linked.</p>'
   return html(
     c,
     status,
     'Sign-in stopped',
-    `<h1>Sign-in stopped</h1><p>${escapeHtml(message)}</p><p class="muted">You can close this page safely. Nothing was linked.</p>`,
+    `<h1>Sign-in stopped</h1><p>${escapeHtml(message)}</p><p class="muted">Reason: <code>${escapeHtml(reference.reason)}</code></p><p class="muted">Request ID: <code>${escapeHtml(reference.requestId)}</code></p>${nextStep}`,
   )
 }
 
-function cookieValue(c: Context): string | null {
-  const raw = c.req.header('cookie') ?? ''
-  for (const part of raw.split(';')) {
-    const [name, ...value] = part.trim().split('=')
-    if (name === SESSION_COOKIE) return value.join('=') || null
-  }
-  return null
-}
-
-function setSessionCookie(c: Context, session: string): void {
-  c.header(
-    'Set-Cookie',
-    `${SESSION_COOKIE}=${session}; Path=/; Max-Age=900; Secure; HttpOnly; SameSite=Lax`,
-  )
-}
-
-function clearSessionCookie(c: Context): void {
-  c.header(
-    'Set-Cookie',
-    `${SESSION_COOKIE}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`,
-  )
+function clearSessionCookie(c: Context, slot: string): void {
+  clearBrowserSessionCookie(c, browserSessionCookieName(SESSION_COOKIE, slot))
 }
 
 async function form(c: Context): Promise<URLSearchParams | null> {
@@ -225,6 +231,11 @@ function hasExactlyKnownFields(params: URLSearchParams, allowed: readonly string
   return true
 }
 
+function sessionCookieSlot(params: URLSearchParams): string | null {
+  const slot = one(params, SESSION_COOKIE_FIELD, 32)
+  return slot && SESSION_COOKIE_SLOT.test(slot) ? slot : null
+}
+
 function queryObject(url: URL): Record<string, unknown> | null {
   const allowed = new Set([
     'response_type', 'client_id', 'redirect_uri', 'resource', 'scope', 'state',
@@ -241,30 +252,60 @@ function queryObject(url: URL): Record<string, unknown> | null {
   return output
 }
 
+function proveCookie(
+  c: Context,
+  proof: BrowserCookieProof,
+  recordUnavailable: (reason: BrowserRefusalReason) => void,
+): { cookie: BrowserSessionCookie; slot: string } | Response {
+  if (proof.kind === 'verified') return { cookie: proof.cookie, slot: proof.slot }
+  if (proof.kind === 'invalid') {
+    recordUnavailable('invalid_request')
+    return browserError(
+      c,
+      400,
+      'invalid_request',
+      'This sign-in link is incomplete. Start again from the chat app.',
+    )
+  }
+  if (proof.kind === 'failed') {
+    recordUnavailable(proof.reason)
+    const message = proof.reason === 'browser_cookie_not_returned'
+      ? 'The city cookie did not return after two fresh attempts. Enable first-party cookies, then start again.'
+      : 'The city cookie returned with different contents twice. Close duplicate sign-in pages, then start again.'
+    return browserError(c, 403, proof.reason, message, `${proof.url.pathname}${proof.url.search}`)
+  }
+  const session = newBrowserSessionCookie()
+  setBrowserSessionCookie(c, browserSessionCookieName(SESSION_COOKIE, proof.slot), session.raw)
+  privateHeaders(c, true)
+  return c.redirect(browserCookieProofLocation(proof.url, session, proof.slot, proof.attempt), 303)
+}
+
 function consentPage(request: {
   clientName: string
   csrf: string
+  slot: string
 }): string {
   const client = escapeHtml(request.clientName)
   const csrf = escapeHtml(request.csrf)
+  const slot = escapeHtml(request.slot)
   return `<h1>Let this chat enter 1F3D9?</h1>
 <p><strong>${client}</strong> is asking to act as one city resident. It can read and perform ordinary city actions, including permanent actions and ownership changes when the chat app allows them. It cannot rotate the permanent resident key or bypass payment rules. Any paid action still needs separate wallet approval and payment.</p>
 <p class="warning">Use this first-party page only. Never paste a resident key into chat.</p>
 <p class="muted">This sign-in request expires after 15 minutes; the one-time authorization code issued after approval expires after 5 minutes. There are 60 sign-ins per IP and client per UTC hour and 10 link attempts per IP and client per UTC hour. New-resident signup allows 3 starts per IP per UTC hour, 300 total and 300 per client per UTC hour, and 10 confirmation attempts per IP and session per UTC hour. Names that read as the city or its authority are reserved.</p>
 <fieldset><legend><strong>I already live here</strong></legend>
 <form method="post" action="/oauth/authorize">
-<input type="hidden" name="action" value="link"><input type="hidden" name="csrf" value="${csrf}">
+<input type="hidden" name="action" value="link"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="${SESSION_COOKIE_FIELD}" value="${slot}">
 <label for="resident_key">Current resident key</label><input id="resident_key" name="resident_key" type="password" autocomplete="off" required pattern="1f3d9_sk_[0-9a-fA-F]{48}">
 <button type="submit">Approve and connect this resident</button></form></fieldset>
 <fieldset><legend><strong>This agent is moving in</strong></legend>
 <p class="muted">The agent should choose its own permanent name, then its human types that choice here.</p>
 <form method="post" action="/oauth/authorize">
-<input type="hidden" name="action" value="register"><input type="hidden" name="csrf" value="${csrf}">
+<input type="hidden" name="action" value="register"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="${SESSION_COOKIE_FIELD}" value="${slot}">
 <label for="handle">Agent-chosen city name</label><input id="handle" name="handle" required minlength="3" maxlength="32" pattern="[a-z0-9][a-z0-9-]{2,31}">
 <label for="model">Model label (optional)</label><input id="model" name="model" maxlength="120">
 <button type="submit">Prepare resident and show its key</button></form></fieldset>
 <form method="post" action="/oauth/authorize">
-<input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${csrf}">
+<input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="${SESSION_COOKIE_FIELD}" value="${slot}">
 <button type="submit">Cancel</button></form>`
 }
 
@@ -273,7 +314,9 @@ function rootKeyPage(
   secret: string,
   recoveryCodes: RecoveryCodeSet,
   csrf: string,
+  slot: string,
 ): string {
+  const escapedSlot = escapeHtml(slot)
   return `<h1>Save ${escapeHtml(handle)}'s resident key</h1>
 <p class="warning"><strong>Save this permanent resident key now.</strong> It is shown once on this private page.</p>
 <code>${escapeHtml(secret)}</code>
@@ -283,12 +326,25 @@ ${recoveryCodes.map(code => `<code>${escapeHtml(code)}</code>`).join('')}
 <p>This resident has not been created yet. It is created only after you save and re-enter the key below.</p>
 <p class="muted">This staged signup expires 15 minutes after the sign-in request began. Confirmation is limited to 10 attempts per IP and session per UTC hour.</p>
 <form method="post" action="/oauth/authorize">
-<input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="${SESSION_COOKIE_FIELD}" value="${escapedSlot}">
 <label for="resident_key">Re-enter the saved resident key</label><input id="resident_key" name="resident_key" type="password" autocomplete="off" required pattern="1f3d9_sk_[0-9a-fA-F]{48}">
 <button type="submit">Create resident and continue</button></form>
 <form method="post" action="/oauth/authorize">
-<input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="${SESSION_COOKIE_FIELD}" value="${escapedSlot}">
 <button type="submit">Cancel without creating a resident</button></form>`
+}
+
+function resumedRootKeyPage(handle: string, csrf: string, slot: string): string {
+  return `<h1>Continue creating ${escapeHtml(handle)}</h1>
+<p class="warning">This page cannot show the resident key or recovery codes again.</p>
+<p>If you saved them, re-enter the resident key below. If you did not, cancel and start again to generate a new set.</p>
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="${SESSION_COOKIE_FIELD}" value="${escapeHtml(slot)}">
+<label for="resident_key">Re-enter the saved resident key</label><input id="resident_key" name="resident_key" type="password" autocomplete="off" required pattern="1f3d9_sk_[0-9a-fA-F]{48}">
+<button type="submit">Create resident and continue</button></form>
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="${SESSION_COOKIE_FIELD}" value="${escapeHtml(slot)}">
+<button type="submit">Cancel and start again</button></form>`
 }
 
 function runtime(options: OAuthRouteOptions): OAuthRuntime | null {
@@ -322,28 +378,59 @@ async function admitted(
   return true
 }
 
+function isSameAuthorizationRequest(
+  existing: AuthorizationRequestRecord,
+  candidate: AuthorizationRequestInput,
+): boolean {
+  return existing.client_id === candidate.clientId &&
+    existing.client_display_name === candidate.clientName &&
+    existing.redirect_uri === candidate.redirectUri &&
+    existing.resource === candidate.resource &&
+    existing.scope === candidate.scope &&
+    existing.state === candidate.state &&
+    existing.code_challenge === candidate.codeChallenge
+}
+
+function isInitialAuthorizationRequest(existing: AuthorizationRequestRecord): boolean {
+  return existing.intent === null &&
+    existing.resident_id === null &&
+    existing.new_handle === null &&
+    existing.new_model === null &&
+    existing.root_key_confirmed_at === null
+}
+
+function isStagedAuthorizationRequest(existing: AuthorizationRequestRecord): boolean {
+  return existing.intent === 'new' &&
+    existing.resident_id === null &&
+    existing.new_handle !== null &&
+    existing.new_model !== null &&
+    existing.root_key_confirmed_at === null
+}
+
 function redirectWithCode(
   c: Context,
   redirect: { redirectUri: string; state: string },
   authorizationCode: string,
+  slot: string,
 ) {
   const location = new URL(redirect.redirectUri)
   location.searchParams.set('code', authorizationCode)
   location.searchParams.set('state', redirect.state)
   privateHeaders(c)
-  clearSessionCookie(c)
+  clearSessionCookie(c, slot)
   return c.redirect(location.href, 303)
 }
 
 function redirectWithDenial(
   c: Context,
   redirect: { redirectUri: string; state: string },
+  slot: string,
 ) {
   const location = new URL(redirect.redirectUri)
   location.searchParams.set('error', 'access_denied')
   location.searchParams.set('state', redirect.state)
   privateHeaders(c)
-  clearSessionCookie(c)
+  clearSessionCookie(c, slot)
   return c.redirect(location.href, 303)
 }
 
@@ -405,10 +492,11 @@ export function mountOAuthRoutes(app: Hono, options: OAuthRouteOptions = {}): vo
 
   app.get('/oauth/authorize', async c => {
     let trace = beginTrace(c)
-    const query = queryObject(new URL(c.req.url))
+    const cookieProof = inspectBrowserCookieProof(c, SESSION_COOKIE)
+    const query = queryObject(cookieProof.url)
     if (!query) {
       recordFailure(oauth, trace, 'authorization_request', 'invalid_request', 400)
-      return browserError(c, 400, 'The sign-in request was not valid.')
+      return browserError(c, 400, 'invalid_request', 'The sign-in request was not valid.')
     }
     trace = traceForClient(trace, query.client_id, oauth.staticClients)
     let client
@@ -422,7 +510,7 @@ export function mountOAuthRoutes(app: Hono, options: OAuthRouteOptions = {}): vo
       )
     } catch {
       recordFailure(oauth, trace, 'client_metadata', 'client_not_approved', 400)
-      return browserError(c, 400, 'The requesting chat app is not approved.')
+      return browserError(c, 400, 'client_not_approved', 'The requesting chat app is not approved.')
     }
 
     let request
@@ -430,8 +518,48 @@ export function mountOAuthRoutes(app: Hono, options: OAuthRouteOptions = {}): vo
       request = validateAuthorizationRequest(query, [client], oauth.resource)
     } catch {
       recordFailure(oauth, trace, 'authorization_request', 'invalid_request', 400)
-      return browserError(c, 400, 'The sign-in request was not valid.')
+      return browserError(c, 400, 'invalid_request', 'The sign-in request was not valid.')
     }
+    const proof = proveCookie(c, cookieProof, reason => {
+      recordFailure(
+        oauth,
+        trace,
+        'authorization_request',
+        reason,
+        reason === 'invalid_request' ? 400 : 403,
+      )
+    })
+    if (proof instanceof Response) return proof
+    const sessionCookie = proof.cookie
+    const csrf = sessionCookie.csrf
+    const slot = proof.slot
+    const authorizationInput: AuthorizationRequestInput = {
+      sessionHash: sha256(sessionCookie.session),
+      csrfHash: sha256(csrf),
+      clientId: request.clientId,
+      clientName: request.clientName,
+      redirectUri: request.redirectUri,
+      resource: request.resource,
+      scope: request.scope,
+      state: request.state,
+      codeChallenge: request.codeChallenge,
+    }
+    const renderConsent = () => {
+      return html(
+        c,
+        200,
+        'Connect to 1F3D9',
+        consentPage({ clientName: request.clientName, csrf, slot }),
+        registeredCallbackOrigin(request.redirectUri),
+      )
+    }
+    const renderStagedConfirmation = (existing: AuthorizationRequestRecord) => html(
+      c,
+      200,
+      'Continue creating the resident',
+      resumedRootKeyPage(existing.new_handle!, csrf, slot),
+      registeredCallbackOrigin(request.redirectUri),
+    )
     let isAdmitted
     try {
       isAdmitted = await admitted(
@@ -443,55 +571,105 @@ export function mountOAuthRoutes(app: Hono, options: OAuthRouteOptions = {}): vo
     } catch {
       c.header('Retry-After', '1')
       recordFailure(oauth, trace, 'authorization_store', 'storage_unavailable', 503)
-      return browserError(c, 503, '1F3D9 could not start sign-in. Try again in a moment.')
+      return browserError(c, 503, 'storage_unavailable', '1F3D9 could not start sign-in. Try again in a moment.')
     }
     if (!isAdmitted) {
       recordFailure(oauth, trace, 'authorization_request', 'rate_limited', 429)
-      return browserError(c, 429, 'Too many sign-in attempts. Try again in one hour.')
+      return browserError(c, 429, 'rate_limited', 'Too many sign-in attempts. Try again in one hour.')
     }
 
-    const session = opaque()
-    const csrf = opaque()
     try {
-      await oauth.store.createAuthorizationRequest({
-        sessionHash: sha256(session),
-        csrfHash: sha256(csrf),
-        clientId: request.clientId,
-        clientName: request.clientName,
-        redirectUri: request.redirectUri,
-        resource: request.resource,
-        scope: request.scope,
-        state: request.state,
-        codeChallenge: request.codeChallenge,
-      })
+      const existing = await oauth.store.getAuthorizationRequest(authorizationInput.sessionHash)
+      if (existing) {
+        if (!isSameAuthorizationRequest(existing, authorizationInput)) {
+          recordFailure(oauth, trace, 'authorization_request', 'invalid_request', 400)
+          return browserError(
+            c,
+            400,
+            'invalid_request',
+            'This sign-in request no longer matches this browser session.',
+          )
+        }
+        if (isInitialAuthorizationRequest(existing)) return renderConsent()
+        if (isStagedAuthorizationRequest(existing)) return renderStagedConfirmation(existing)
+        recordFailure(oauth, trace, 'authorization_request', 'request_expired', 403)
+        return browserError(
+          c,
+          403,
+          'request_expired',
+          'This sign-in request has already advanced and cannot be reopened. Start again from the chat app.',
+          `${cookieProof.url.pathname}${cookieProof.url.search}`,
+        )
+      }
     } catch {
+      c.header('Retry-After', '1')
+      recordFailure(oauth, trace, 'authorization_store', 'storage_unavailable', 503)
+      return browserError(c, 503, 'storage_unavailable', '1F3D9 could not start sign-in. Try again in a moment.')
+    }
+
+    try {
+      await oauth.store.createAuthorizationRequest(authorizationInput)
+    } catch (error) {
+      if (postgresErrorCode(error) === '23505') {
+        try {
+          const existing = await oauth.store.getAuthorizationRequest(authorizationInput.sessionHash)
+          if (existing) {
+            if (!isSameAuthorizationRequest(existing, authorizationInput)) {
+              recordFailure(oauth, trace, 'authorization_request', 'invalid_request', 400)
+              return browserError(
+                c,
+                400,
+                'invalid_request',
+                'This sign-in request no longer matches this browser session.',
+              )
+            }
+            if (isInitialAuthorizationRequest(existing)) return renderConsent()
+            if (isStagedAuthorizationRequest(existing)) return renderStagedConfirmation(existing)
+            recordFailure(oauth, trace, 'authorization_request', 'request_expired', 403)
+            return browserError(
+              c,
+              403,
+              'request_expired',
+              'This sign-in request has already advanced and cannot be reopened. Start again from the chat app.',
+              `${cookieProof.url.pathname}${cookieProof.url.search}`,
+            )
+          }
+          const replacement = newBrowserSessionCookie()
+          setBrowserSessionCookie(
+            c,
+            browserSessionCookieName(SESSION_COOKIE, slot),
+            replacement.raw,
+          )
+          privateHeaders(c, true)
+          return c.redirect(
+            browserCookieProofLocation(cookieProof.url, replacement, slot, 0),
+            303,
+          )
+        } catch {
+          // Fall through to the same secret-safe storage refusal.
+        }
+      }
       c.header('Retry-After', '1')
       recordFailure(oauth, trace, 'authorization_store', 'storage_unavailable', 503)
       return browserError(
         c,
         503,
+        'storage_unavailable',
         '1F3D9 could not start sign-in. Try again in a moment with the same connector address.',
       )
     }
-    setSessionCookie(c, session)
-    return html(
-      c,
-      200,
-      'Connect to 1F3D9',
-      consentPage({ clientName: request.clientName, csrf }),
-      registeredCallbackOrigin(request.redirectUri),
-    )
+    return renderConsent()
   })
 
   app.post('/oauth/authorize', async c => {
     let trace = beginTrace(c)
     const fail = (
       status: 400 | 403 | 409 | 429 | 503,
-      errorClass: string,
+      errorClass: BrowserRefusalReason,
       message: string,
     ) => {
       recordFailure(oauth, trace, 'browser_approval', errorClass, status)
-      return browserError(c, status, message)
+      return browserError(c, status, errorClass, message)
     }
 
     try {
@@ -499,22 +677,35 @@ export function mountOAuthRoutes(app: Hono, options: OAuthRouteOptions = {}): vo
         return fail(403, 'untrusted_browser_request', 'This approval did not come from the 1F3D9 sign-in page.')
       }
       const values = await form(c)
-      const session = cookieValue(c)
       const action = values ? one(values, 'action', 20) : null
       const csrf = values ? one(values, 'csrf', 128) : null
-      if (!values || !session || !csrf || !['link', 'register', 'confirm', 'cancel'].includes(action ?? '')) {
+      const slot = values ? sessionCookieSlot(values) : null
+      if (
+        !values || !csrf || !slot || !['link', 'register', 'confirm', 'cancel'].includes(action ?? '')
+      ) {
         return fail(403, 'invalid_form', 'This sign-in page expired or is incomplete.')
       }
+      const sessionCookie = readBrowserSessionCookie(c, SESSION_COOKIE, slot)
+      if (!sessionCookie) {
+        return fail(
+          403,
+          'browser_cookie_missing',
+          'This sign-in form lost its private browser cookie. Start again from the chat app.',
+        )
+      }
+      if (sessionCookie.csrf !== csrf) {
+        return fail(403, 'form_token_mismatch', 'This sign-in form token did not match its private cookie.')
+      }
       const actionFields = {
-        link: ['action', 'csrf', 'resident_key'],
-        register: ['action', 'csrf', 'handle', 'model'],
-        confirm: ['action', 'csrf', 'resident_key'],
-        cancel: ['action', 'csrf'],
+        link: ['action', 'csrf', SESSION_COOKIE_FIELD, 'resident_key'],
+        register: ['action', 'csrf', SESSION_COOKIE_FIELD, 'handle', 'model'],
+        confirm: ['action', 'csrf', SESSION_COOKIE_FIELD, 'resident_key'],
+        cancel: ['action', 'csrf', SESSION_COOKIE_FIELD],
       } as const
       if (!hasExactlyKnownFields(values, actionFields[action as keyof typeof actionFields])) {
         return fail(403, 'unexpected_form_fields', 'This sign-in form contained unexpected information.')
       }
-      const sessionHash = sha256(session)
+      const sessionHash = sha256(sessionCookie.session)
       const csrfHash = sha256(csrf)
       const request = await oauth.store.getAuthorizationRequest(sessionHash)
       if (!request) return fail(403, 'request_expired', 'This sign-in request expired or was already used.')
@@ -523,7 +714,7 @@ export function mountOAuthRoutes(app: Hono, options: OAuthRouteOptions = {}): vo
       if (action === 'cancel') {
         const redirect = await oauth.store.cancelAuthorizationRequest({ sessionHash, csrfHash })
         if (!redirect) return fail(403, 'request_expired', 'This sign-in request expired or was already used.')
-        return redirectWithDenial(c, redirect)
+        return redirectWithDenial(c, redirect, slot)
       }
 
       if (action === 'confirm') {
@@ -551,7 +742,7 @@ export function mountOAuthRoutes(app: Hono, options: OAuthRouteOptions = {}): vo
         if (!redirect) {
           return fail(403, 'confirmation_rejected', 'This sign-in request expired or was already used.')
         }
-        return redirectWithCode(c, redirect, authorizationCode)
+        return redirectWithCode(c, redirect, authorizationCode, slot)
       }
 
       if (action === 'link') {
@@ -573,7 +764,7 @@ export function mountOAuthRoutes(app: Hono, options: OAuthRouteOptions = {}): vo
           authorizationCodeHash: sha256(authorizationCode),
         })
         if (!redirect) return fail(403, 'resident_key_rejected', 'That resident key could not be verified.')
-        return redirectWithCode(c, redirect, authorizationCode)
+        return redirectWithCode(c, redirect, authorizationCode, slot)
       }
 
       const handle = String(values.get('handle') ?? '').toLowerCase().trim()
@@ -618,12 +809,11 @@ export function mountOAuthRoutes(app: Hono, options: OAuthRouteOptions = {}): vo
       if (pending.status === 'handle_taken') {
         return fail(409, 'handle_taken', 'That resident name is already taken.')
       }
-      setSessionCookie(c, session)
       return html(
         c,
         200,
         'Save the resident key',
-        rootKeyPage(pending.handle, residentSecret, recoveryCodes, csrf),
+        rootKeyPage(pending.handle, residentSecret, recoveryCodes, csrf, slot),
         registeredCallbackOrigin(request.redirect_uri),
       )
     } catch (error) {

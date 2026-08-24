@@ -38,14 +38,30 @@ type Registration = {
   recoveryCodeHashes: string[]
 }
 
-function pageState(response: Response): Promise<{ cookie: string; csrf: string; html: string }> {
-  return response.text().then(html => {
-    const cookie = (response.headers.get('set-cookie') ?? '').split(';', 1)[0]!
-    const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1]
-    assert.ok(cookie)
-    assert.ok(csrf)
-    return { cookie, csrf, html }
+async function pageState(
+  app: Hono,
+  path: '/join' | '/rotate' | '/recovery',
+): Promise<{ cookie: string; csrf: string; html: string; slot: string }> {
+  const first = await app.request(path)
+  assert.equal(first.status, 303)
+  const cookie = (first.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+  const location = first.headers.get('location')
+  assert.ok(cookie)
+  assert.ok(location)
+  const redirect = new URL(location!, ORIGIN)
+  assert.equal(redirect.origin, ORIGIN)
+  assert.equal(redirect.pathname, path)
+
+  const second = await app.request(`${redirect.pathname}${redirect.search}`, {
+    headers: { cookie },
   })
+  const html = await second.text()
+  const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1]
+  const slot = /^__Host-1f3d9_(?:join|rotate|recovery)_([0-9a-f]{32})=/u.exec(cookie)?.[1]
+  assert.equal(second.status, 200)
+  assert.ok(csrf)
+  assert.ok(slot)
+  return { cookie, csrf, html, slot }
 }
 
 function postForm(
@@ -64,10 +80,15 @@ function postForm(
   }
   if (origin !== null) headers.origin = origin
   if (referer !== undefined) headers.referer = referer
+  const body = new URLSearchParams(values)
+  if (!body.has('session_cookie')) {
+    const slot = /^__Host-1f3d9_(?:join|rotate|recovery)_([0-9a-f]{32})=/u.exec(cookie)?.[1]
+    if (slot) body.set('session_cookie', slot)
+  }
   return app.request(path, {
     method: 'POST',
     headers,
-    body: new URLSearchParams(values),
+    body,
   })
 }
 
@@ -304,7 +325,7 @@ test('rotation is absent unless explicitly enabled and its switch is independent
     environment: { PUBLIC_ORIGIN: ORIGIN, IDENTITY_ROTATION_ENABLED: 'true' },
     store: memoryStore().store,
   })
-  assert.equal((await rotationOnly.request('/rotate')).status, 200)
+  assert.equal((await rotationOnly.request('/rotate')).status, 303)
   assert.equal((await rotationOnly.request('/recovery')).status, 404)
 
   const recoveryOnly = new Hono()
@@ -312,7 +333,7 @@ test('rotation is absent unless explicitly enabled and its switch is independent
     environment: { PUBLIC_ORIGIN: ORIGIN, IDENTITY_RECOVERY_ENABLED: 'true' },
     store: memoryStore().store,
   })
-  assert.equal((await recoveryOnly.request('/recovery')).status, 200)
+  assert.equal((await recoveryOnly.request('/recovery')).status, 303)
   assert.equal((await recoveryOnly.request('/rotate')).status, 404)
 })
 
@@ -320,7 +341,7 @@ test('rotation GET is private and uses a separate host-only session cookie', asy
   const { app } = appWithMemoryStore()
   const response = await app.request('/rotate')
 
-  assert.equal(response.status, 200)
+  assert.equal(response.status, 303)
   assert.equal(response.headers.get('cache-control'), 'no-store')
   assert.equal(response.headers.get('pragma'), 'no-cache')
   assert.equal(response.headers.get('referrer-policy'), 'same-origin')
@@ -328,14 +349,164 @@ test('rotation GET is private and uses a separate host-only session cookie', asy
   assert.match(response.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
   assert.equal(response.headers.get('access-control-allow-origin'), null)
   const setCookie = response.headers.get('set-cookie') ?? ''
-  assert.match(setCookie, /^__Host-1f3d9_rotate=/)
+  assert.match(setCookie, /^__Host-1f3d9_rotate_[0-9a-f]{32}=/)
   assert.match(setCookie, /; Path=\/; Max-Age=900; Secure; HttpOnly; SameSite=Lax$/)
   assert.doesNotMatch(setCookie, /(?:Domain=|join|recovery)/i)
 })
 
+test('identity doors recover stale proof URLs and name fresh cookie failures accurately', async () => {
+  const requestId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+
+  for (const path of ['/join', '/rotate', '/recovery']) {
+    const { app, memory } = appWithMemoryStore()
+    const first = await app.request(path)
+    assert.equal(first.status, 303, path)
+    assert.equal(memory.calls.length, 0, path)
+    assert.doesNotMatch(await first.text(), /<form|resident_key|recovery_code|type="password"/iu, path)
+    const firstCookie = (first.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+    const firstLocation = first.headers.get('location') ?? ''
+    assert.ok(firstCookie, path)
+    assert.match(firstLocation, new RegExp(`^${path.replace('/', '\\/')}\\?`), path)
+
+    const accepted = await app.request(firstLocation, { headers: { cookie: firstCookie } })
+    assert.equal(accepted.status, 200, path)
+    assert.match(await accepted.text(), /<form/iu, path)
+    assert.equal(memory.calls.length, 0, path)
+
+    const mismatchedCookie = `${firstCookie.slice(0, -1)}${firstCookie.endsWith('0') ? '1' : '0'}`
+    const retry = await app.request(firstLocation, { headers: { cookie: mismatchedCookie } })
+    assert.equal(retry.status, 303, path)
+    assert.equal(memory.calls.length, 0, path)
+    assert.doesNotMatch(await retry.text(), /<form|resident_key|recovery_code|type="password"/iu, path)
+    const retryCookie = (retry.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+    const retryLocation = retry.headers.get('location') ?? ''
+    assert.ok(retryCookie, path)
+    assert.notEqual(retryCookie, firstCookie, path)
+    assert.notEqual(retryLocation, firstLocation, path)
+
+    const stopped = await app.request(retryLocation)
+    assert.equal(stopped.status, 403, path)
+    assert.equal(stopped.headers.get('x-1f3d9-error-class'), 'forbidden', path)
+    assert.equal(stopped.headers.get('x-1f3d9-reason'), 'browser_cookie_not_returned', path)
+    const stoppedRequestId = stopped.headers.get('x-request-id') ?? ''
+    assert.match(stoppedRequestId, requestId, path)
+    const stoppedHtml = await stopped.text()
+    assert.match(stoppedHtml, new RegExp(stoppedRequestId, 'u'), path)
+    assert.match(stoppedHtml, new RegExp(`href="${path}"`, 'u'), path)
+    assert.doesNotMatch(stoppedHtml, /<form|resident_key|recovery_code|type="password"/iu, path)
+
+    const changedRetryCookie = `${retryCookie.slice(0, -1)}${retryCookie.endsWith('0') ? '1' : '0'}`
+    const mismatch = await app.request(retryLocation, {
+      headers: { cookie: changedRetryCookie },
+    })
+    assert.equal(mismatch.status, 403, path)
+    assert.equal(mismatch.headers.get('x-1f3d9-reason'), 'browser_cookie_mismatch', path)
+    assert.doesNotMatch(
+      await mismatch.text(),
+      /<form|resident_key|recovery_code|type="password"/iu,
+      path,
+    )
+
+    const stale = new URL(retryLocation, ORIGIN)
+    stale.searchParams.set('_1f3d9_cookie_issued', '0')
+    const recovered = await app.request(`${stale.pathname}${stale.search}`, {
+      headers: { cookie: changedRetryCookie },
+    })
+    assert.equal(recovered.status, 303, path)
+    assert.equal(recovered.headers.get('x-1f3d9-error-class'), null, path)
+    assert.equal(recovered.headers.get('x-1f3d9-reason'), null, path)
+    const recoveredRequestId = recovered.headers.get('x-request-id') ?? ''
+    assert.equal(recoveredRequestId, '', path)
+    assert.doesNotMatch(await recovered.text(), /<form|resident_key|recovery_code|type="password"/iu, path)
+    const recoveredCookie = (recovered.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+    const recoveredLocation = recovered.headers.get('location') ?? ''
+    assert.ok(recoveredCookie, path)
+    assert.notEqual(recoveredCookie, retryCookie, path)
+    assert.notEqual(recoveredLocation, retryLocation, path)
+
+    const acceptedAgain = await app.request(recoveredLocation, { headers: { cookie: recoveredCookie } })
+    assert.equal(acceptedAgain.status, 200, path)
+    assert.match(await acceptedAgain.text(), /<form/iu, path)
+    assert.equal(memory.calls.length, 0, path)
+  }
+})
+
+test('two tabs on the same identity door keep separate proof and form cookies', async () => {
+  for (const path of ['/join', '/rotate', '/recovery']) {
+    const { app } = appWithMemoryStore()
+    const first = await app.request(path)
+    const second = await app.request(path)
+    const firstCookie = (first.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+    const secondCookie = (second.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+    const cookies = `${firstCookie}; ${secondCookie}`
+
+    assert.notEqual(firstCookie.split('=', 1)[0], secondCookie.split('=', 1)[0], path)
+    for (const response of [
+      await app.request(first.headers.get('location') ?? '', { headers: { cookie: cookies } }),
+      await app.request(second.headers.get('location') ?? '', { headers: { cookie: cookies } }),
+    ]) {
+      assert.equal(response.status, 200, path)
+      assert.match(await response.text(), /<form/iu, path)
+    }
+  }
+})
+
+test('identity POST rejects a legacy session-only cookie instead of skipping CSRF comparison', async () => {
+  const { app, memory } = appWithMemoryStore()
+  const start = await pageState(app, '/join')
+  const legacyCookie = start.cookie.replace(/\.[0-9a-f]{64}$/u, '')
+
+  const refused = await postForm(app, '/join', legacyCookie, {
+    action: 'stage',
+    csrf: start.csrf,
+    handle: 'legacy-cookie',
+    model: '',
+  })
+
+  assert.equal(refused.status, 403)
+  assert.equal(refused.headers.get('x-1f3d9-reason'), 'browser_cookie_missing')
+  assert.match(await refused.text(), /private cookie/iu)
+  assert.equal(memory.registration(), null)
+  assert.equal(memory.calls.filter(call => call.method === 'stageRegistration').length, 0)
+})
+
+test('identity refusal request IDs resolve to safe method, route, and reason diagnostics', async () => {
+  const { app } = appWithMemoryStore()
+  const start = await pageState(app, '/join')
+  const logs: unknown[][] = []
+  const originalConsoleError = console.error
+  console.error = (...values: unknown[]) => logs.push(values)
+  try {
+    const refused = await postForm(app, '/join', '', {
+      action: 'confirm',
+      csrf: start.csrf,
+      session_cookie: start.slot,
+      resident_key: ROOT_KEY,
+    })
+    assert.equal(refused.status, 403)
+    const requestId = refused.headers.get('x-request-id')
+    assert.ok(requestId)
+    assert.equal(logs.length, 1)
+    assert.equal(logs[0]?.[0], 'identity_browser_refusal')
+    const diagnostic = JSON.parse(String(logs[0]?.[1])) as Record<string, unknown>
+    assert.deepEqual(diagnostic, {
+      event: 'identity_browser_refusal',
+      request_id: requestId,
+      error_class: 'forbidden',
+      reason: 'browser_cookie_missing',
+      status: 403,
+      method: 'POST',
+      path: '/join',
+    })
+    assert.doesNotMatch(JSON.stringify(logs), new RegExp(`${ROOT_KEY}|${start.csrf}|${start.slot}`, 'u'))
+  } finally {
+    console.error = originalConsoleError
+  }
+})
+
 test('real browser form posts can use a same-origin referrer when Origin is withheld', async () => {
   const join = appWithMemoryStore()
-  const joinStart = await pageState(await join.app.request('/join'))
+  const joinStart = await pageState(join.app, '/join')
   const joined = await postForm(join.app, '/join', joinStart.cookie, {
     action: 'stage', csrf: joinStart.csrf, handle: 'mobile-join', model: '',
   }, null, `${ORIGIN}/join`)
@@ -343,7 +514,7 @@ test('real browser form posts can use a same-origin referrer when Origin is with
   assert.equal(join.memory.registration()?.handle, 'mobile-join')
 
   const rotation = appWithMemoryStore()
-  const rotationStart = await pageState(await rotation.app.request('/rotate'))
+  const rotationStart = await pageState(rotation.app, '/rotate')
   const rotated = await postForm(rotation.app, '/rotate', rotationStart.cookie, {
     action: 'begin', csrf: rotationStart.csrf, resident_key: ROOT_KEY,
   }, 'null', `${ORIGIN}/rotate`)
@@ -351,7 +522,7 @@ test('real browser form posts can use a same-origin referrer when Origin is with
   assert.ok(rotation.memory.stagedRotation())
 
   const recovery = appWithMemoryStore()
-  const recoveryStart = await pageState(await recovery.app.request('/recovery'))
+  const recoveryStart = await pageState(recovery.app, '/recovery')
   const generated = await postForm(recovery.app, '/recovery', recoveryStart.cookie, {
     action: 'generate', csrf: recoveryStart.csrf, resident_key: ROOT_KEY,
   }, null, `${ORIGIN}/recovery`)
@@ -368,7 +539,7 @@ test('identity forms accept same-origin fetch metadata when privacy browsers omi
   }
 
   const join = appWithMemoryStore()
-  const joinStart = await pageState(await join.app.request('/join'))
+  const joinStart = await pageState(join.app, '/join')
   const joined = await postForm(join.app, '/join', joinStart.cookie, {
     action: 'stage', csrf: joinStart.csrf, handle: 'metadata-join', model: '',
   }, null, undefined, fetchMetadata)
@@ -376,7 +547,7 @@ test('identity forms accept same-origin fetch metadata when privacy browsers omi
   assert.equal(join.memory.registration()?.handle, 'metadata-join')
 
   const rotation = appWithMemoryStore()
-  const rotationStart = await pageState(await rotation.app.request('/rotate'))
+  const rotationStart = await pageState(rotation.app, '/rotate')
   const rotated = await postForm(rotation.app, '/rotate', rotationStart.cookie, {
     action: 'begin', csrf: rotationStart.csrf, resident_key: ROOT_KEY,
   }, null, undefined, fetchMetadata)
@@ -384,7 +555,7 @@ test('identity forms accept same-origin fetch metadata when privacy browsers omi
   assert.ok(rotation.memory.stagedRotation())
 
   const recovery = appWithMemoryStore()
-  const recoveryStart = await pageState(await recovery.app.request('/recovery'))
+  const recoveryStart = await pageState(recovery.app, '/recovery')
   const generated = await postForm(recovery.app, '/recovery', recoveryStart.cookie, {
     action: 'generate', csrf: recoveryStart.csrf, resident_key: ROOT_KEY,
   }, null, undefined, fetchMetadata)
@@ -395,15 +566,20 @@ test('identity forms accept same-origin fetch metadata when privacy browsers omi
 
 test('identity forms still reject absent or conflicting same-site evidence', async () => {
   const absent = appWithMemoryStore()
-  const absentStart = await pageState(await absent.app.request('/join'))
+  const absentStart = await pageState(absent.app, '/join')
   const noEvidence = await postForm(absent.app, '/join', absentStart.cookie, {
     action: 'stage', csrf: absentStart.csrf, handle: 'no-evidence', model: '',
   }, null)
   assert.equal(noEvidence.status, 403)
+  assert.equal(noEvidence.headers.get('x-1f3d9-error-class'), 'forbidden')
+  assert.equal(noEvidence.headers.get('x-1f3d9-reason'), 'untrusted_browser_request')
+  const noEvidenceRequestId = noEvidence.headers.get('x-request-id') ?? ''
+  assert.match(noEvidenceRequestId, /^[0-9a-f-]{36}$/iu)
+  assert.match(await noEvidence.text(), new RegExp(noEvidenceRequestId, 'u'))
   assert.equal(absent.memory.registration(), null)
 
   const conflicting = appWithMemoryStore()
-  const conflictingStart = await pageState(await conflicting.app.request('/rotate'))
+  const conflictingStart = await pageState(conflicting.app, '/rotate')
   const hostileOrigin = await postForm(conflicting.app, '/rotate', conflictingStart.cookie, {
     action: 'begin', csrf: conflictingStart.csrf, resident_key: ROOT_KEY,
   }, 'https://attacker.test', `${ORIGIN}/rotate`)
@@ -411,7 +587,7 @@ test('identity forms still reject absent or conflicting same-site evidence', asy
   assert.equal(conflicting.memory.stagedRotation(), null)
 
   const hostileMetadata = appWithMemoryStore()
-  const hostileMetadataStart = await pageState(await hostileMetadata.app.request('/join'))
+  const hostileMetadataStart = await pageState(hostileMetadata.app, '/join')
   const crossSiteFetch = await postForm(hostileMetadata.app, '/join', hostileMetadataStart.cookie, {
     action: 'stage', csrf: hostileMetadataStart.csrf, handle: 'hostile-metadata', model: '',
   }, null, undefined, {
@@ -429,7 +605,7 @@ test('identity forms still reject absent or conflicting same-site evidence', asy
     'not-a-url',
   ]) {
     const hostileReferrer = appWithMemoryStore()
-    const hostileStart = await pageState(await hostileReferrer.app.request('/recovery'))
+    const hostileStart = await pageState(hostileReferrer.app, '/recovery')
     const missingOrigin = await postForm(hostileReferrer.app, '/recovery', hostileStart.cookie, {
       action: 'generate', csrf: hostileStart.csrf, resident_key: ROOT_KEY,
     }, null, referer)
@@ -455,7 +631,7 @@ test('legacy registration is retired before it can return a resident key', async
 
 test('identity forms state their expiry, attempt caps, and reserved-name rule before submission', async () => {
   const joinHarness = appWithMemoryStore()
-  const join = await pageState(await joinHarness.app.request('/join'))
+  const join = await pageState(joinHarness.app, '/join')
   assert.match(join.html, /names?[^.]*city[^.]*authority[^.]*reserved/iu)
   assert.match(join.html, /3[^.]*join[^.]*per IP[^.]*UTC hour/iu)
   assert.match(join.html, /300[^.]*join[^.]*total[^.]*UTC hour/iu)
@@ -468,13 +644,13 @@ test('identity forms state their expiry, attempt caps, and reserved-name rule be
   assert.equal(reserved.status, 400)
   assert.match(await reserved.text(), /resident name[^.]*reserved/iu)
 
-  const rotation = await pageState(await appWithMemoryStore().app.request('/rotate'))
+  const rotation = await pageState(appWithMemoryStore().app, '/rotate')
   assert.match(rotation.html, /15 minutes/iu)
   assert.match(rotation.html, /5[^.]*rotation[^.]*per IP[^.]*UTC hour/iu)
   assert.match(rotation.html, /10[^.]*confirmation[^.]*per IP and session[^.]*UTC hour/iu)
   assert.match(rotation.html, /5[^.]*successful rotations[^.]*per resident[^.]*UTC day/iu)
 
-  const recovery = await pageState(await appWithMemoryStore().app.request('/recovery'))
+  const recovery = await pageState(appWithMemoryStore().app, '/recovery')
   assert.match(recovery.html, /15 minutes/iu)
   assert.match(recovery.html, /5[^.]*recovery sets?[^.]*per IP[^.]*UTC hour/iu)
   assert.match(recovery.html, /10[^.]*recoveries[^.]*per IP[^.]*UTC hour/iu)
@@ -483,7 +659,7 @@ test('identity forms state their expiry, attempt caps, and reserved-name rule be
 
 test('join stages only a hash and creates a resident only after exact key re-entry', async () => {
   const { app, memory } = appWithMemoryStore()
-  const start = await pageState(await app.request('/join'))
+  const start = await pageState(app, '/join')
   assert.match(start.html, /has not been created/i)
   assert.equal(memory.registration(), null)
 
@@ -562,7 +738,7 @@ test('join discloses no generated secrets when throttling or registration stagin
     { registrationStageOutcome: 'error' as const },
   ]) {
     const { app, memory } = appWithMemoryStore(options)
-    const start = await pageState(await app.request('/join'))
+    const start = await pageState(app, '/join')
     const response = await postForm(app, '/join', start.cookie, {
       action: 'stage', csrf: start.csrf, handle: 'fail-closed', model: 'test-model',
     })
@@ -576,7 +752,7 @@ test('join discloses no generated secrets when throttling or registration stagin
 
 test('join rejects an expired browser session before generating or staging secrets', async () => {
   const { app, memory } = appWithMemoryStore()
-  const start = await pageState(await app.request('/join'))
+  const start = await pageState(app, '/join')
   const response = await postForm(app, '/join', '', {
     action: 'stage', csrf: start.csrf, handle: 'expired-session', model: 'test-model',
   })
@@ -593,7 +769,7 @@ test('join confirmation stays uncommitted when its rate limit or store fails clo
     { registrationConfirmOutcome: 'error' as const },
   ]) {
     const { app, memory } = appWithMemoryStore(options)
-    const start = await pageState(await app.request('/join'))
+    const start = await pageState(app, '/join')
     const staged = await postForm(app, '/join', start.cookie, {
       action: 'stage', csrf: start.csrf, handle: 'unconfirmed', model: 'test-model',
     })
@@ -615,7 +791,7 @@ test('join confirmation stays uncommitted when its rate limit or store fails clo
 
 test('join rejects cross-site, malformed, duplicate, and unknown form fields', async () => {
   const { app, memory } = appWithMemoryStore()
-  const start = await pageState(await app.request('/join'))
+  const start = await pageState(app, '/join')
 
   const crossSite = await postForm(app, '/join', start.cookie, {
     action: 'stage', csrf: start.csrf, handle: 'new-resident', model: '',
@@ -623,7 +799,7 @@ test('join rejects cross-site, malformed, duplicate, and unknown form fields', a
   assert.equal(crossSite.status, 403)
 
   const duplicate = new URLSearchParams({
-    action: 'stage', csrf: start.csrf, handle: 'new-resident', model: '',
+    action: 'stage', csrf: start.csrf, session_cookie: start.slot, handle: 'new-resident', model: '',
   })
   duplicate.append('handle', 'second-resident')
   const duplicateResponse = await app.request('/join', {
@@ -642,7 +818,7 @@ test('join rejects cross-site, malformed, duplicate, and unknown form fields', a
 
 test('identity throttling trusts only the platform-appended client address', async () => {
   const { app, memory } = appWithMemoryStore()
-  const start = await pageState(await app.request('/join'))
+  const start = await pageState(app, '/join')
   const response = await app.request('/join', {
     method: 'POST',
     headers: {
@@ -652,7 +828,7 @@ test('identity throttling trusts only the platform-appended client address', asy
       'x-vercel-forwarded-for': '198.51.100.9, 203.0.113.17',
     },
     body: new URLSearchParams({
-      action: 'stage', csrf: start.csrf, handle: 'rate-limited', model: '',
+      action: 'stage', csrf: start.csrf, session_cookie: start.slot, handle: 'rate-limited', model: '',
     }),
   })
 
@@ -671,7 +847,7 @@ test('identity throttling trusts only the platform-appended client address', asy
 
 test('rotation stages hashes, shows the replacement once, and requires exact re-entry', async () => {
   const { app, memory } = appWithMemoryStore()
-  const start = await pageState(await app.request('/rotate'))
+  const start = await pageState(app, '/rotate')
   assert.match(start.html, /old key.*remain(?:s)? active/i)
 
   const stagedResponse = await postForm(app, '/rotate', start.cookie, {
@@ -709,7 +885,7 @@ test('rotation stages hashes, shows the replacement once, and requires exact re-
 
 test('canceling a staged rotation keeps the old key and grants unchanged', async () => {
   const { app, memory } = appWithMemoryStore()
-  const start = await pageState(await app.request('/rotate'))
+  const start = await pageState(app, '/rotate')
   const staged = await postForm(app, '/rotate', start.cookie, {
     action: 'begin', csrf: start.csrf, resident_key: ROOT_KEY,
   })
@@ -727,7 +903,7 @@ test('canceling a staged rotation keeps the old key and grants unchanged', async
 
 test('rotation reports an atomic confirmation rate limit without claiming success', async () => {
   const { app, memory } = appWithMemoryStore({ rotationConfirmRateLimited: true })
-  const start = await pageState(await app.request('/rotate'))
+  const start = await pageState(app, '/rotate')
   const staged = await postForm(app, '/rotate', start.cookie, {
     action: 'begin', csrf: start.csrf, resident_key: ROOT_KEY,
   })
@@ -744,7 +920,7 @@ test('rotation reports an atomic confirmation rate limit without claiming succes
 
 test('rotation rejects an incorrect old key and browser rate-limit denials', async () => {
   const incorrect = appWithMemoryStore()
-  const incorrectStart = await pageState(await incorrect.app.request('/rotate'))
+  const incorrectStart = await pageState(incorrect.app, '/rotate')
   const rejected = await postForm(incorrect.app, '/rotate', incorrectStart.cookie, {
     action: 'begin', csrf: incorrectStart.csrf, resident_key: OTHER_ROOT_KEY,
   })
@@ -752,7 +928,7 @@ test('rotation rejects an incorrect old key and browser rate-limit denials', asy
   assert.equal(incorrect.memory.stagedRotation(), null)
 
   const beginLimited = appWithMemoryStore({ deniedAttemptKind: 'rotation_begin' })
-  const beginStart = await pageState(await beginLimited.app.request('/rotate'))
+  const beginStart = await pageState(beginLimited.app, '/rotate')
   const deniedBegin = await postForm(beginLimited.app, '/rotate', beginStart.cookie, {
     action: 'begin', csrf: beginStart.csrf, resident_key: ROOT_KEY,
   })
@@ -760,7 +936,7 @@ test('rotation rejects an incorrect old key and browser rate-limit denials', asy
   assert.equal(beginLimited.memory.calls.some(call => call.method === 'stageRootRotation'), false)
 
   const confirmLimited = appWithMemoryStore({ deniedAttemptKind: 'rotation_confirm' })
-  const confirmStart = await pageState(await confirmLimited.app.request('/rotate'))
+  const confirmStart = await pageState(confirmLimited.app, '/rotate')
   const staged = await postForm(confirmLimited.app, '/rotate', confirmStart.cookie, {
     action: 'begin', csrf: confirmStart.csrf, resident_key: ROOT_KEY,
   })
@@ -794,7 +970,7 @@ test('rotation rejects hostile origins, unknown actions, and extra or duplicate 
     }),
     (app, state) => {
       const values = new URLSearchParams({
-        action: 'begin', csrf: state.csrf, resident_key: ROOT_KEY,
+        action: 'begin', csrf: state.csrf, session_cookie: state.slot, resident_key: ROOT_KEY,
       })
       values.append('resident_key', OTHER_ROOT_KEY)
       return app.request('/rotate', {
@@ -811,7 +987,7 @@ test('rotation rejects hostile origins, unknown actions, and extra or duplicate 
 
   for (const attempt of attempts) {
     const { app, memory } = appWithMemoryStore()
-    const start = await pageState(await app.request('/rotate'))
+    const start = await pageState(app, '/rotate')
     assert.equal((await attempt(app, start)).status, 403)
     assert.equal(memory.stagedRotation(), null)
   }
@@ -819,7 +995,7 @@ test('rotation rejects hostile origins, unknown actions, and extra or duplicate 
 
 test('rotation throttling sends only hashed IP and session buckets', async () => {
   const { app, memory } = appWithMemoryStore()
-  const start = await pageState(await app.request('/rotate'))
+  const start = await pageState(app, '/rotate')
   const staged = await app.request('/rotate', {
     method: 'POST',
     headers: {
@@ -829,7 +1005,7 @@ test('rotation throttling sends only hashed IP and session buckets', async () =>
       'x-vercel-forwarded-for': '198.51.100.9, 203.0.113.17',
     },
     body: new URLSearchParams({
-      action: 'begin', csrf: start.csrf, resident_key: ROOT_KEY,
+      action: 'begin', csrf: start.csrf, session_cookie: start.slot, resident_key: ROOT_KEY,
     }),
   })
   const replacementKey = (await staged.text()).match(/1f3d9_sk_[0-9a-f]{48}/)?.[0]
@@ -855,7 +1031,7 @@ test('rotation throttling sends only hashed IP and session buckets', async () =>
 
 test('recovery codes and replacement key exist in plaintext only on one private page each', async () => {
   const { app, memory } = appWithMemoryStore()
-  const start = await pageState(await app.request('/recovery'))
+  const start = await pageState(app, '/recovery')
 
   const generated = await postForm(app, '/recovery', start.cookie, {
     action: 'generate', csrf: start.csrf, resident_key: ROOT_KEY,
@@ -871,7 +1047,7 @@ test('recovery codes and replacement key exist in plaintext only on one private 
   assert.ok(generationCall)
   assert.doesNotMatch(JSON.stringify(generationCall), /1f3d9_(?:sk|rc)_/)
 
-  const recoverStart = await pageState(await app.request('/recovery'))
+  const recoverStart = await pageState(app, '/recovery')
   const staged = await postForm(app, '/recovery', recoverStart.cookie, {
     action: 'begin', csrf: recoverStart.csrf, recovery_code: codes[0]!,
   })
@@ -900,7 +1076,7 @@ test('recovery codes and replacement key exist in plaintext only on one private 
 
 test('canceling a staged flow does not create or recover a resident', async () => {
   const { app, memory } = appWithMemoryStore()
-  const join = await pageState(await app.request('/join'))
+  const join = await pageState(app, '/join')
   await postForm(app, '/join', join.cookie, {
     action: 'stage', csrf: join.csrf, handle: 'cancel-me', model: '',
   })
@@ -911,7 +1087,7 @@ test('canceling a staged flow does not create or recover a resident', async () =
   assert.equal(memory.registration(), null)
   assert.equal(memory.confirmed(), false)
 
-  const recovery = await pageState(await app.request('/recovery'))
+  const recovery = await pageState(app, '/recovery')
   const canceledRecovery = await postForm(app, '/recovery', recovery.cookie, {
     action: 'cancel', csrf: recovery.csrf,
   })

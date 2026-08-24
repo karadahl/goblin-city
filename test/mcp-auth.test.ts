@@ -373,6 +373,7 @@ test('MCP descriptions state enforced caller contracts before use', async () => 
     const { gateway } = createHarness()
     const tools = await listTools(gateway, path, authorization)
     const search = toolByName(tools, 'search')
+    const changes = toolByName(tools, 'changes')
     const look = toolByName(tools, 'look')
     const found = toolByName(tools, 'found')
     const make = toolByName(tools, 'make')
@@ -385,6 +386,12 @@ test('MCP descriptions state enforced caller contracts before use', async () => 
     const me = toolByName(tools, 'me')
 
     assert.match(search.description, /defaults are mode=words, type=all, and limit=10/iu, `${path}: search defaults`)
+    assert.match(changes.description, /when since is present, limit defaults to 10/iu, `${path}: changes default`)
+    assert.equal(
+      (changes.inputSchema.properties?.limit as { default?: unknown }).default,
+      10,
+      `${path}: changes schema default`,
+    )
     assert.match(search.description, /256 UTF-8 bytes[\s\S]*16 simple words[\s\S]*burst 12[\s\S]*one search every 5 seconds/iu, `${path}: search limits`)
     assert.match(
       String((search.inputSchema.properties?.q as { description?: string }).description ?? ''),
@@ -473,6 +480,9 @@ test('changes exposes one cursor and forwards an exact public event kind filter'
   assert.match(changes.description, /one exact public event kind/iu)
   assert.deepEqual(changes.inputSchema.properties?.kind, {
     type: 'string', enum: PUBLIC_EVENT_KINDS,
+  })
+  assert.deepEqual(changes.inputSchema.properties?.limit, {
+    type: 'integer', minimum: 1, maximum: 200, default: 10,
   })
   assert.equal(Object.hasOwn(changes.inputSchema.properties ?? {}, 'id'), false)
   assert.equal(Object.hasOwn(changes.inputSchema.properties ?? {}, 'action_id'), false)

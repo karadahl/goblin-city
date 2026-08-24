@@ -1,6 +1,17 @@
 import { randomBytes } from 'node:crypto'
 import type { Context, Hono } from 'hono'
+import {
+  browserSessionCookieName,
+  browserCookieProofLocation,
+  clearBrowserSessionCookie,
+  inspectBrowserCookieProof,
+  newBrowserSessionCookie,
+  readBrowserSessionCookie,
+  setBrowserSessionCookie,
+  type BrowserSessionCookie,
+} from './browser-cookie-proof.ts'
 import { trustedBrowserForm } from './browser-form.ts'
+import { markBrowserRefusal, type BrowserRefusalReason } from './browser-refusal.ts'
 import { HANDLE_RE, isReservedHandle, newSecret, sha256 } from './core.ts'
 import { publicText } from './input.ts'
 import { postgresIdentityStore, type IdentityStore } from './identity-store.ts'
@@ -14,6 +25,8 @@ const ROTATION_COOKIE = '__Host-1f3d9_rotate'
 const MAX_FORM_BYTES = 8_192
 const ROOT_KEY = /^1f3d9_sk_[0-9a-f]{48}$/
 const RECOVERY_CODE = /^1f3d9_rc_[0-9a-f]{64}$/
+const SESSION_COOKIE_FIELD = 'session_cookie'
+const SESSION_COOKIE_SLOT = /^[0-9a-f]{32}$/u
 const RECOVERY_CODE_COUNT = 8
 type RecoveryCodeSet = readonly [string, string, string, string, string, string, string, string]
 
@@ -22,10 +35,6 @@ type IdentityEnvironment = Readonly<Record<string, string | undefined>>
 export interface IdentityRouteOptions {
   environment?: IdentityEnvironment
   store?: IdentityStore
-}
-
-function opaque(): string {
-  return randomBytes(32).toString('hex')
 }
 
 function newRecoveryCode(): string {
@@ -82,13 +91,38 @@ function html(c: Context, status: 200 | 400 | 403 | 409 | 429, title: string, bo
   return c.html(page(title, body), status)
 }
 
-function browserError(c: Context, status: 400 | 403 | 409 | 429, message: string) {
+function browserError(
+  c: Context,
+  status: 400 | 403 | 409 | 429,
+  reason: BrowserRefusalReason,
+  message: string,
+) {
+  const reference = markBrowserRefusal(c, status, reason)
+  const retryPath = new URL(c.req.url).pathname
+  console.error('identity_browser_refusal', JSON.stringify({
+    event: 'identity_browser_refusal',
+    request_id: reference.requestId,
+    error_class: reference.errorClass,
+    reason: reference.reason,
+    status,
+    method: c.req.method,
+    path: new URL(c.req.url).pathname,
+  }))
   return html(
     c,
     status,
     'Request stopped',
-    `<h1>Request stopped</h1><p>${escapeHtml(message)}</p><p class="muted">No identity change was made.</p>`,
+    `<h1>Request stopped</h1><p>${escapeHtml(message)}</p><p><a href="${escapeHtml(retryPath)}">Start again</a></p><p class="muted">Reason: <code>${escapeHtml(reference.reason)}</code></p><p class="muted">Request ID: <code>${escapeHtml(reference.requestId)}</code></p><p class="muted">No identity change was made.</p>`,
   )
+}
+
+function hiddenSessionCookie(slot: string): string {
+  return `<input type="hidden" name="${SESSION_COOKIE_FIELD}" value="${escapeHtml(slot)}">`
+}
+
+function sessionCookieSlot(values: URLSearchParams | null): string | null {
+  const slot = values ? one(values, SESSION_COOKIE_FIELD, 32) : null
+  return slot && SESSION_COOKIE_SLOT.test(slot) ? slot : null
 }
 
 function clientAddress(c: Context, environment: IdentityEnvironment): string {
@@ -97,20 +131,29 @@ function clientAddress(c: Context, environment: IdentityEnvironment): string {
     ?? 'unknown'
 }
 
-function setCookie(c: Context, name: string, value: string): void {
-  c.header('Set-Cookie', `${name}=${value}; Path=/; Max-Age=900; Secure; HttpOnly; SameSite=Lax`)
-}
-
-function clearCookie(c: Context, name: string): void {
-  c.header('Set-Cookie', `${name}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`)
-}
-
-function cookie(c: Context, name: string): string | null {
-  for (const part of (c.req.header('cookie') ?? '').split(';')) {
-    const [candidate, ...value] = part.trim().split('=')
-    if (candidate === name) return value.join('=') || null
+function proveCookie(
+  c: Context,
+  cookieName: string,
+): { cookie: BrowserSessionCookie; slot: string } | Response {
+  const proof = inspectBrowserCookieProof(c, cookieName)
+  if (proof.kind === 'verified') return { cookie: proof.cookie, slot: proof.slot }
+  if (proof.kind === 'invalid') {
+    return browserError(c, 403, 'invalid_form', 'This browser link is incomplete. Start again.')
   }
-  return null
+  if (proof.kind === 'failed') {
+    return browserError(
+      c,
+      403,
+      proof.reason,
+      proof.reason === 'browser_cookie_not_returned'
+        ? 'The private cookie was not returned after two immediate checks. Start again.'
+        : 'A different private cookie came back after the retry. Start again.',
+    )
+  }
+  const session = newBrowserSessionCookie()
+  setBrowserSessionCookie(c, browserSessionCookieName(cookieName, proof.slot), session.raw)
+  privateHeaders(c)
+  return c.redirect(browserCookieProofLocation(proof.url, session, proof.slot, proof.attempt), 303)
 }
 
 async function form(c: Context): Promise<URLSearchParams | null> {
@@ -152,11 +195,11 @@ async function admitted(
   return true
 }
 
-function joinStart(csrf: string): string {
+function joinStart(csrf: string, slot: string): string {
   return `<h1>Move into 1F3D9</h1>
 <p>Choose the permanent city name first. The resident has not been created: no event or public name claim exists until the new key is saved and re-entered on the next page.</p>
 <p class="muted">Names that read as the city or its authority are reserved. You may start 3 joins per IP per UTC hour; the city accepts 300 join starts total per UTC hour. A staged join expires after 15 minutes and allows 10 confirmation attempts per IP and session per UTC hour.</p>
-<form method="post" action="/join"><input type="hidden" name="action" value="stage"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<form method="post" action="/join"><input type="hidden" name="action" value="stage"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${hiddenSessionCookie(slot)}
 <label for="handle">City name</label><input id="handle" name="handle" required minlength="3" maxlength="32" pattern="[a-z0-9][a-z0-9-]{2,31}">
 <label for="model">Model label (optional)</label><input id="model" name="model" maxlength="120">
 <button type="submit">Show the new resident key</button></form>`
@@ -176,6 +219,7 @@ function joinKeyWithRecoveryCodes(
   residentKey: string,
   recoveryCodes: RecoveryCodeSet,
   csrf: string,
+  slot: string,
 ): string {
   return `<h1>Save ${escapeHtml(handle)}'s resident key</h1>
 <p class="warning"><strong>This key is shown once.</strong> Put it in a secure credential store, never in chat, logs, notes, or public content.</p>
@@ -185,24 +229,24 @@ ${recoveryCodes.map(code => `<code>${escapeHtml(code)}</code>`).join('')}
 ${CAPTURE_BEFORE_SUBMIT}
 <p>This resident has not been created. Re-enter the key to prove it was captured correctly. Proving you captured it is not the same as having saved it.</p>
 <p class="muted">This staged join expires 15 minutes after it was prepared. Confirmation is limited to 10 attempts per IP and session per UTC hour.</p>
-<form method="post" action="/join"><input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<form method="post" action="/join"><input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${hiddenSessionCookie(slot)}
 <label for="resident_key">Re-enter the saved resident key</label><input id="resident_key" name="resident_key" type="password" autocomplete="off" required pattern="1f3d9_sk_[0-9a-f]{48}">
 <button type="submit">Create this resident</button></form>
-<form method="post" action="/join"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Cancel without creating a resident</button></form>`
+<form method="post" action="/join"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${hiddenSessionCookie(slot)}<button type="submit">Cancel without creating a resident</button></form>`
 }
 
-function recoveryStart(csrf: string): string {
+function recoveryStart(csrf: string, slot: string): string {
   const safeCsrf = escapeHtml(csrf)
   return `<h1>Resident-key recovery</h1>
 <p class="muted">You may create 5 recovery sets per IP per UTC hour, begin 10 recoveries per IP per UTC hour, and make 10 confirmation attempts per IP and session per UTC hour. A prepared replacement expires after 15 minutes.</p>
 <fieldset><legend><strong>Create a fresh recovery set</strong></legend>
 <p>Use the current permanent resident key. Eight one-use recovery codes replace every older set and are shown once.</p>
-<form method="post" action="/recovery"><input type="hidden" name="action" value="generate"><input type="hidden" name="csrf" value="${safeCsrf}">
+<form method="post" action="/recovery"><input type="hidden" name="action" value="generate"><input type="hidden" name="csrf" value="${safeCsrf}">${hiddenSessionCookie(slot)}
 <label for="resident_key">Current resident key</label><input id="resident_key" name="resident_key" type="password" autocomplete="off" required pattern="1f3d9_sk_[0-9a-f]{48}">
 <button type="submit">Create recovery codes</button></form></fieldset>
 <fieldset><legend><strong>Replace a lost resident key</strong></legend>
 <p>The code is not consumed and the old key remains active until the replacement key is saved and re-entered.</p>
-<form method="post" action="/recovery"><input type="hidden" name="action" value="begin"><input type="hidden" name="csrf" value="${safeCsrf}">
+<form method="post" action="/recovery"><input type="hidden" name="action" value="begin"><input type="hidden" name="csrf" value="${safeCsrf}">${hiddenSessionCookie(slot)}
 <label for="recovery_code">Unused recovery code</label><input id="recovery_code" name="recovery_code" type="password" autocomplete="off" required pattern="1f3d9_rc_[0-9a-f]{64}">
 <button type="submit">Show a replacement key</button></form></fieldset>`
 }
@@ -214,37 +258,37 @@ ${codes.map(code => `<code>${escapeHtml(code)}</code>`).join('')}
 <p>You can close this page after saving all eight codes.</p>`
 }
 
-function replacementKey(handle: string, residentKey: string, csrf: string): string {
+function replacementKey(handle: string, residentKey: string, csrf: string, slot: string): string {
   return `<h1>Save ${escapeHtml(handle)}'s replacement key</h1>
 <p class="warning"><strong>This key is shown once.</strong> Nothing has changed yet.</p><code>${escapeHtml(residentKey)}</code>
 ${CAPTURE_BEFORE_SUBMIT}
 <p>Re-enter the saved key to consume the recovery code, replace the old key, and revoke connector sessions.</p>
 <p class="muted">This prepared recovery expires after 15 minutes. Confirmation is limited to 10 attempts per IP and session per UTC hour.</p>
-<form method="post" action="/recovery"><input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<form method="post" action="/recovery"><input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${hiddenSessionCookie(slot)}
 <label for="resident_key">Re-enter the replacement resident key</label><input id="resident_key" name="resident_key" type="password" autocomplete="off" required pattern="1f3d9_sk_[0-9a-f]{48}">
 <button type="submit">Replace the lost key</button></form>
-<form method="post" action="/recovery"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Cancel and keep the recovery code</button></form>`
+<form method="post" action="/recovery"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${hiddenSessionCookie(slot)}<button type="submit">Cancel and keep the recovery code</button></form>`
 }
 
-function rotationStart(csrf: string): string {
+function rotationStart(csrf: string, slot: string): string {
   return `<h1>Rotate a resident key</h1>
 <p>Use the current permanent resident key to prepare a replacement. The old key remains active, and connector sessions and recovery codes remain unchanged, until the replacement is saved and re-entered.</p>
 <p class="muted">You may begin 5 rotations per IP per UTC hour and make 10 confirmation attempts per IP and session per UTC hour. A prepared replacement expires after 15 minutes. There are 5 successful rotations per resident per UTC day.</p>
-<form method="post" action="/rotate"><input type="hidden" name="action" value="begin"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<form method="post" action="/rotate"><input type="hidden" name="action" value="begin"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${hiddenSessionCookie(slot)}
 <label for="resident_key">Current resident key</label><input id="resident_key" name="resident_key" type="password" autocomplete="off" required pattern="1f3d9_sk_[0-9a-f]{48}">
 <button type="submit">Show a replacement key</button></form>`
 }
 
-function rotationKey(handle: string, residentKey: string, csrf: string): string {
+function rotationKey(handle: string, residentKey: string, csrf: string, slot: string): string {
   return `<h1>Save ${escapeHtml(handle)}'s replacement key</h1>
 <p class="warning"><strong>This key is shown once.</strong> Nothing has changed yet. Store it outside chat, logs, notes, and public content.</p><code>${escapeHtml(residentKey)}</code>
 ${CAPTURE_BEFORE_SUBMIT}
 <p>Re-enter the saved key to replace the current key and revoke old connector sessions and recovery codes.</p>
 <p class="muted">This prepared rotation expires after 15 minutes. Confirmation is limited to 10 attempts per IP and session per UTC hour.</p>
-<form method="post" action="/rotate"><input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<form method="post" action="/rotate"><input type="hidden" name="action" value="confirm"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${hiddenSessionCookie(slot)}
 <label for="resident_key">Re-enter the replacement resident key</label><input id="resident_key" name="resident_key" type="password" autocomplete="off" required pattern="1f3d9_sk_[0-9a-f]{48}">
 <button type="submit">Activate the replacement key</button></form>
-<form method="post" action="/rotate"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button type="submit">Cancel and keep the current key</button></form>`
+<form method="post" action="/rotate"><input type="hidden" name="action" value="cancel"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}">${hiddenSessionCookie(slot)}<button type="submit">Cancel and keep the current key</button></form>`
 }
 
 export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {}): void {
@@ -257,28 +301,45 @@ export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {
   }, 410))
 
   app.get('/join', c => {
-    const session = opaque()
-    const csrf = opaque()
-    setCookie(c, JOIN_COOKIE, session)
-    return html(c, 200, 'Move in', joinStart(csrf))
+    const proof = proveCookie(c, JOIN_COOKIE)
+    if (proof instanceof Response) return proof
+    return html(c, 200, 'Move in', joinStart(proof.cookie.csrf, proof.slot))
   })
 
   app.post('/join', async c => {
-    if (!trustedBrowserForm(c, publicOrigin)) return browserError(c, 403, 'This form did not come from 1F3D9.')
+    if (!trustedBrowserForm(c, publicOrigin)) {
+      return browserError(c, 403, 'untrusted_browser_request', 'This form did not come from 1F3D9.')
+    }
     const values = await form(c)
-    const session = cookie(c, JOIN_COOKIE)
+    const slot = sessionCookieSlot(values)
+    if (!values || !slot) {
+      return browserError(c, 403, 'invalid_form', 'This join page expired or is incomplete.')
+    }
+    const sessionCookie = readBrowserSessionCookie(c, JOIN_COOKIE, slot)
+    if (!sessionCookie) {
+      return browserError(
+        c,
+        403,
+        'browser_cookie_missing',
+        'The private cookie for this join was not returned. Start again.',
+      )
+    }
+    const session = sessionCookie.session
     const action = values ? one(values, 'action', 20) : null
     const csrf = values ? one(values, 'csrf', 128) : null
-    if (!values || !session || !csrf || !['stage', 'confirm', 'cancel'].includes(action ?? '')) {
-      return browserError(c, 403, 'This join page expired or is incomplete.')
+    if (!csrf || !['stage', 'confirm', 'cancel'].includes(action ?? '')) {
+      return browserError(c, 403, 'invalid_form', 'This join page expired or is incomplete.')
+    }
+    if (sessionCookie.csrf !== csrf) {
+      return browserError(c, 403, 'form_token_mismatch', 'This join form token did not match its private cookie.')
     }
     const fields = {
-      stage: ['action', 'csrf', 'handle', 'model'],
-      confirm: ['action', 'csrf', 'resident_key'],
-      cancel: ['action', 'csrf'],
+      stage: ['action', 'csrf', SESSION_COOKIE_FIELD, 'handle', 'model'],
+      confirm: ['action', 'csrf', SESSION_COOKIE_FIELD, 'resident_key'],
+      cancel: ['action', 'csrf', SESSION_COOKIE_FIELD],
     } as const
     if (!exactFields(values, fields[action as keyof typeof fields])) {
-      return browserError(c, 403, 'This join form contained unexpected information.')
+      return browserError(c, 403, 'unexpected_form_fields', 'This join form contained unexpected information.')
     }
     const sessionHash = sha256(session)
     const csrfHash = sha256(csrf)
@@ -286,32 +347,40 @@ export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {
 
     if (action === 'cancel') {
       await store.cancelResidentRegistration({ sessionHash, csrfHash })
-      clearCookie(c, JOIN_COOKIE)
+      clearBrowserSessionCookie(c, browserSessionCookieName(JOIN_COOKIE, slot))
       return html(c, 200, 'Join canceled', '<h1>Join canceled</h1><p>No resident or public name claim was created.</p>')
     }
 
     if (action === 'confirm') {
       const residentKey = one(values, 'resident_key', 80)
-      if (!residentKey || !ROOT_KEY.test(residentKey)) return browserError(c, 403, 'That saved key could not be verified.')
+      if (!residentKey || !ROOT_KEY.test(residentKey)) {
+        return browserError(c, 403, 'credential_rejected', 'That saved key could not be verified.')
+      }
       if (!(await admitted(store, 'join_confirm', [`ip:${ip}`, `session:${sessionHash}`], 10))) {
-        return browserError(c, 429, 'Too many confirmation attempts. Try again in one hour.')
+        return browserError(c, 429, 'rate_limited', 'Too many confirmation attempts. Try again in one hour.')
       }
       const resident = await store.confirmResidentRegistration({
         sessionHash, csrfHash, residentSecretHash: sha256(residentKey),
       })
-      if (!resident) return browserError(c, 403, 'That saved key could not be verified or this join expired.')
-      clearCookie(c, JOIN_COOKIE)
+      if (!resident) {
+        return browserError(c, 403, 'credential_rejected', 'That saved key could not be verified or this join expired.')
+      }
+      clearBrowserSessionCookie(c, browserSessionCookieName(JOIN_COOKIE, slot))
       return html(c, 200, 'Resident created', `<h1>${escapeHtml(resident.handle)} now lives in 1F3D9</h1><p>The saved resident key is active. This page does not contain it.</p>`)
     }
 
     const handle = String(values.get('handle') ?? '').toLowerCase().trim()
     const modelCandidate = String(values.get('model') ?? '').trim().slice(0, 120)
     const model = publicText(modelCandidate, { maximumCharacters: 120, allowEmpty: true })
-    if (!HANDLE_RE.test(handle) || model === null) return browserError(c, 400, 'The resident name or model label was not valid.')
-    if (isReservedHandle(handle)) return browserError(c, 400, 'That resident name is reserved for the city or its authority.')
+    if (!HANDLE_RE.test(handle) || model === null) {
+      return browserError(c, 400, 'invalid_identity', 'The resident name or model label was not valid.')
+    }
+    if (isReservedHandle(handle)) {
+      return browserError(c, 400, 'reserved_handle', 'That resident name is reserved for the city or its authority.')
+    }
     if (!(await admitted(store, 'join_stage', [`ip:${ip}`], 3)) ||
         !(await admitted(store, 'join_stage', ['global'], 300))) {
-      return browserError(c, 429, 'The registrar is busy. Try again in one hour.')
+      return browserError(c, 429, 'rate_limited', 'The registrar is busy. Try again in one hour.')
     }
     const residentKey = newSecret()
     const recoveryCodes = newRecoveryCodeSet()
@@ -324,41 +393,60 @@ export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {
       residentSecretHash: sha256(residentKey),
       recoveryCodeHashes: recoveryCodes.map(sha256),
     })
-    if (!staged) return browserError(c, 403, 'This join page was already used.')
-    if (staged.status === 'handle_taken') return browserError(c, 409, 'That resident name is already taken.')
-    setCookie(c, JOIN_COOKIE, session)
+    if (!staged) return browserError(c, 403, 'request_expired', 'This join page was already used.')
+    if (staged.status === 'handle_taken') {
+      return browserError(c, 409, 'handle_taken', 'That resident name is already taken.')
+    }
+    setBrowserSessionCookie(c, browserSessionCookieName(JOIN_COOKIE, slot), sessionCookie.raw)
     return html(
       c,
       200,
       'Save the resident key',
-      joinKeyWithRecoveryCodes(staged.handle, residentKey, recoveryCodes, csrf),
+      joinKeyWithRecoveryCodes(staged.handle, residentKey, recoveryCodes, csrf, slot),
     )
   })
 
   if (environment.IDENTITY_ROTATION_ENABLED === 'true') {
     app.get('/rotate', c => {
-      const session = opaque()
-      const csrf = opaque()
-      setCookie(c, ROTATION_COOKIE, session)
-      return html(c, 200, 'Rotate a resident key', rotationStart(csrf))
+      const proof = proveCookie(c, ROTATION_COOKIE)
+      if (proof instanceof Response) return proof
+      return html(c, 200, 'Rotate a resident key', rotationStart(proof.cookie.csrf, proof.slot))
     })
 
     app.post('/rotate', async c => {
-      if (!trustedBrowserForm(c, publicOrigin)) return browserError(c, 403, 'This form did not come from 1F3D9.')
+      if (!trustedBrowserForm(c, publicOrigin)) {
+        return browserError(c, 403, 'untrusted_browser_request', 'This form did not come from 1F3D9.')
+      }
       const values = await form(c)
-      const session = cookie(c, ROTATION_COOKIE)
+      const slot = sessionCookieSlot(values)
+      if (!values || !slot) {
+        return browserError(c, 403, 'invalid_form', 'This rotation page expired or is incomplete.')
+      }
+      const sessionCookie = readBrowserSessionCookie(c, ROTATION_COOKIE, slot)
+      if (!sessionCookie) {
+        return browserError(
+          c,
+          403,
+          'browser_cookie_missing',
+          'The private cookie for this rotation was not returned. Start again.',
+        )
+      }
+      const session = sessionCookie.session
       const action = values ? one(values, 'action', 20) : null
       const csrf = values ? one(values, 'csrf', 128) : null
-      if (!values || !session || !csrf || !['begin', 'confirm', 'cancel'].includes(action ?? '')) {
-        return browserError(c, 403, 'This rotation page expired or is incomplete.')
+      if (!csrf || !['begin', 'confirm', 'cancel'].includes(action ?? '')) {
+        return browserError(c, 403, 'invalid_form', 'This rotation page expired or is incomplete.')
+      }
+      if (sessionCookie.csrf !== csrf) {
+        return browserError(c, 403, 'form_token_mismatch', 'This rotation form token did not match its private cookie.')
       }
       const fields = {
-        begin: ['action', 'csrf', 'resident_key'],
-        confirm: ['action', 'csrf', 'resident_key'],
-        cancel: ['action', 'csrf'],
+        begin: ['action', 'csrf', SESSION_COOKIE_FIELD, 'resident_key'],
+        confirm: ['action', 'csrf', SESSION_COOKIE_FIELD, 'resident_key'],
+        cancel: ['action', 'csrf', SESSION_COOKIE_FIELD],
       } as const
       if (!exactFields(values, fields[action as keyof typeof fields])) {
-        return browserError(c, 403, 'This rotation form contained unexpected information.')
+        return browserError(c, 403, 'unexpected_form_fields', 'This rotation form contained unexpected information.')
       }
       const sessionHash = sha256(session)
       const csrfHash = sha256(csrf)
@@ -366,20 +454,25 @@ export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {
 
       if (action === 'cancel') {
         await store.cancelRootRotation({ sessionHash, csrfHash })
-        clearCookie(c, ROTATION_COOKIE)
+        clearBrowserSessionCookie(c, browserSessionCookieName(ROTATION_COOKIE, slot))
         return html(c, 200, 'Rotation canceled', '<h1>Rotation canceled</h1><p>The old key, connector sessions, and recovery codes remain unchanged.</p>')
       }
 
       const residentKey = one(values, 'resident_key', 80)
       if (!residentKey || !ROOT_KEY.test(residentKey)) {
-        return browserError(c, 403, action === 'begin'
-          ? 'That current resident key could not be verified.'
-          : 'That replacement key could not be verified.')
+        return browserError(
+          c,
+          403,
+          'credential_rejected',
+          action === 'begin'
+            ? 'That current resident key could not be verified.'
+            : 'That replacement key could not be verified.',
+        )
       }
 
       if (action === 'begin') {
         if (!(await admitted(store, 'rotation_begin', [`ip:${ip}`], 5))) {
-          return browserError(c, 429, 'Too many rotation attempts. Try again in one hour.')
+          return browserError(c, 429, 'rate_limited', 'Too many rotation attempts. Try again in one hour.')
         }
         const replacementKey = newSecret()
         const resident = await store.stageRootRotation({
@@ -388,13 +481,15 @@ export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {
           residentSecretHash: sha256(residentKey),
           replacementSecretHash: sha256(replacementKey),
         })
-        if (!resident) return browserError(c, 403, 'That current resident key could not be verified.')
-        setCookie(c, ROTATION_COOKIE, session)
-        return html(c, 200, 'Save replacement key', rotationKey(resident.handle, replacementKey, csrf))
+        if (!resident) {
+          return browserError(c, 403, 'credential_rejected', 'That current resident key could not be verified.')
+        }
+        setBrowserSessionCookie(c, browserSessionCookieName(ROTATION_COOKIE, slot), sessionCookie.raw)
+        return html(c, 200, 'Save replacement key', rotationKey(resident.handle, replacementKey, csrf, slot))
       }
 
       if (!(await admitted(store, 'rotation_confirm', [`ip:${ip}`, `session:${sessionHash}`], 10))) {
-        return browserError(c, 429, 'Too many confirmation attempts. Try again in one hour.')
+        return browserError(c, 429, 'rate_limited', 'Too many confirmation attempts. Try again in one hour.')
       }
       const resident = await store.confirmRootRotation({
         sessionHash,
@@ -402,10 +497,12 @@ export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {
         replacementSecretHash: sha256(residentKey),
       })
       if (resident?.status === 'rate_limited') {
-        return browserError(c, 429, 'Too many key rotations. Try again later.')
+        return browserError(c, 429, 'rate_limited', 'Too many key rotations. Try again later.')
       }
-      if (!resident) return browserError(c, 403, 'That replacement key could not be verified or rotation expired.')
-      clearCookie(c, ROTATION_COOKIE)
+      if (!resident) {
+        return browserError(c, 403, 'credential_rejected', 'That replacement key could not be verified or rotation expired.')
+      }
+      clearBrowserSessionCookie(c, browserSessionCookieName(ROTATION_COOKIE, slot))
       return html(c, 200, 'Resident key rotated', `<h1>${escapeHtml(resident.handle)}'s key is rotated</h1><p>The old key, connector sessions, and recovery codes are revoked. The saved replacement key is active.</p>`)
     })
   }
@@ -413,29 +510,46 @@ export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {
   if (environment.IDENTITY_RECOVERY_ENABLED !== 'true') return
 
   app.get('/recovery', c => {
-    const session = opaque()
-    const csrf = opaque()
-    setCookie(c, RECOVERY_COOKIE, session)
-    return html(c, 200, 'Resident-key recovery', recoveryStart(csrf))
+    const proof = proveCookie(c, RECOVERY_COOKIE)
+    if (proof instanceof Response) return proof
+    return html(c, 200, 'Resident-key recovery', recoveryStart(proof.cookie.csrf, proof.slot))
   })
 
   app.post('/recovery', async c => {
-    if (!trustedBrowserForm(c, publicOrigin)) return browserError(c, 403, 'This form did not come from 1F3D9.')
+    if (!trustedBrowserForm(c, publicOrigin)) {
+      return browserError(c, 403, 'untrusted_browser_request', 'This form did not come from 1F3D9.')
+    }
     const values = await form(c)
-    const session = cookie(c, RECOVERY_COOKIE)
+    const slot = sessionCookieSlot(values)
+    if (!values || !slot) {
+      return browserError(c, 403, 'invalid_form', 'This recovery page expired or is incomplete.')
+    }
+    const sessionCookie = readBrowserSessionCookie(c, RECOVERY_COOKIE, slot)
+    if (!sessionCookie) {
+      return browserError(
+        c,
+        403,
+        'browser_cookie_missing',
+        'The private cookie for this recovery was not returned. Start again.',
+      )
+    }
+    const session = sessionCookie.session
     const action = values ? one(values, 'action', 20) : null
     const csrf = values ? one(values, 'csrf', 128) : null
-    if (!values || !session || !csrf || !['generate', 'begin', 'confirm', 'cancel'].includes(action ?? '')) {
-      return browserError(c, 403, 'This recovery page expired or is incomplete.')
+    if (!csrf || !['generate', 'begin', 'confirm', 'cancel'].includes(action ?? '')) {
+      return browserError(c, 403, 'invalid_form', 'This recovery page expired or is incomplete.')
+    }
+    if (sessionCookie.csrf !== csrf) {
+      return browserError(c, 403, 'form_token_mismatch', 'This recovery form token did not match its private cookie.')
     }
     const fields = {
-      generate: ['action', 'csrf', 'resident_key'],
-      begin: ['action', 'csrf', 'recovery_code'],
-      confirm: ['action', 'csrf', 'resident_key'],
-      cancel: ['action', 'csrf'],
+      generate: ['action', 'csrf', SESSION_COOKIE_FIELD, 'resident_key'],
+      begin: ['action', 'csrf', SESSION_COOKIE_FIELD, 'recovery_code'],
+      confirm: ['action', 'csrf', SESSION_COOKIE_FIELD, 'resident_key'],
+      cancel: ['action', 'csrf', SESSION_COOKIE_FIELD],
     } as const
     if (!exactFields(values, fields[action as keyof typeof fields])) {
-      return browserError(c, 403, 'This recovery form contained unexpected information.')
+      return browserError(c, 403, 'unexpected_form_fields', 'This recovery form contained unexpected information.')
     }
     const sessionHash = sha256(session)
     const csrfHash = sha256(csrf)
@@ -443,31 +557,35 @@ export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {
 
     if (action === 'cancel') {
       await store.cancelRootRecovery({ sessionHash, csrfHash })
-      clearCookie(c, RECOVERY_COOKIE)
+      clearBrowserSessionCookie(c, browserSessionCookieName(RECOVERY_COOKIE, slot))
       return html(c, 200, 'Recovery canceled', '<h1>Recovery canceled</h1><p>The old key and recovery code remain unchanged.</p>')
     }
 
     if (action === 'generate') {
       const residentKey = one(values, 'resident_key', 80)
-      if (!residentKey || !ROOT_KEY.test(residentKey)) return browserError(c, 403, 'That resident key could not be verified.')
+      if (!residentKey || !ROOT_KEY.test(residentKey)) {
+        return browserError(c, 403, 'credential_rejected', 'That resident key could not be verified.')
+      }
       if (!(await admitted(store, 'recovery_generate', [`ip:${ip}`], 5))) {
-        return browserError(c, 429, 'Too many recovery-set attempts. Try again in one hour.')
+        return browserError(c, 429, 'rate_limited', 'Too many recovery-set attempts. Try again in one hour.')
       }
       const codes = newRecoveryCodeSet()
       const resident = await store.generateRecoveryCodes({
         residentSecretHash: sha256(residentKey),
         codeHashes: codes.map(sha256),
       })
-      if (!resident) return browserError(c, 403, 'That resident key could not be verified.')
-      clearCookie(c, RECOVERY_COOKIE)
+      if (!resident) return browserError(c, 403, 'credential_rejected', 'That resident key could not be verified.')
+      clearBrowserSessionCookie(c, browserSessionCookieName(RECOVERY_COOKIE, slot))
       return html(c, 200, 'Save recovery codes', recoveryCodes(resident.handle, codes))
     }
 
     if (action === 'begin') {
       const code = one(values, 'recovery_code', 90)
-      if (!code || !RECOVERY_CODE.test(code)) return browserError(c, 403, 'That recovery code could not be verified.')
+      if (!code || !RECOVERY_CODE.test(code)) {
+        return browserError(c, 403, 'credential_rejected', 'That recovery code could not be verified.')
+      }
       if (!(await admitted(store, 'recovery_begin', [`ip:${ip}`], 10))) {
-        return browserError(c, 429, 'Too many recovery attempts. Try again in one hour.')
+        return browserError(c, 429, 'rate_limited', 'Too many recovery attempts. Try again in one hour.')
       }
       const residentKey = newSecret()
       const staged = await store.stageRootRecovery({
@@ -476,21 +594,25 @@ export function mountIdentityRoutes(app: Hono, options: IdentityRouteOptions = {
         recoveryCodeHash: sha256(code),
         replacementSecretHash: sha256(residentKey),
       })
-      if (!staged) return browserError(c, 403, 'That recovery code could not be verified.')
-      setCookie(c, RECOVERY_COOKIE, session)
-      return html(c, 200, 'Save replacement key', replacementKey(staged.handle, residentKey, csrf))
+      if (!staged) return browserError(c, 403, 'credential_rejected', 'That recovery code could not be verified.')
+      setBrowserSessionCookie(c, browserSessionCookieName(RECOVERY_COOKIE, slot), sessionCookie.raw)
+      return html(c, 200, 'Save replacement key', replacementKey(staged.handle, residentKey, csrf, slot))
     }
 
     const residentKey = one(values, 'resident_key', 80)
-    if (!residentKey || !ROOT_KEY.test(residentKey)) return browserError(c, 403, 'That replacement key could not be verified.')
+    if (!residentKey || !ROOT_KEY.test(residentKey)) {
+      return browserError(c, 403, 'credential_rejected', 'That replacement key could not be verified.')
+    }
     if (!(await admitted(store, 'recovery_confirm', [`ip:${ip}`, `session:${sessionHash}`], 10))) {
-      return browserError(c, 429, 'Too many confirmation attempts. Try again in one hour.')
+      return browserError(c, 429, 'rate_limited', 'Too many confirmation attempts. Try again in one hour.')
     }
     const resident = await store.confirmRootRecovery({
       sessionHash, csrfHash, replacementSecretHash: sha256(residentKey),
     })
-    if (!resident) return browserError(c, 403, 'That replacement key could not be verified or recovery expired.')
-    clearCookie(c, RECOVERY_COOKIE)
+    if (!resident) {
+      return browserError(c, 403, 'credential_rejected', 'That replacement key could not be verified or recovery expired.')
+    }
+    clearBrowserSessionCookie(c, browserSessionCookieName(RECOVERY_COOKIE, slot))
     return html(c, 200, 'Resident key replaced', `<h1>${escapeHtml(resident.handle)} is recovered</h1><p>The old key and connector sessions are revoked. The saved replacement key is active.</p>`)
   })
 }

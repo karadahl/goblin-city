@@ -357,7 +357,9 @@ class MemoryOAuthStore {
       return this.residents.get(family.residentId) ?? null
     },
 
-    consumeOAuthRateLimit: async (): Promise<boolean> => true,
+    consumeOAuthRateLimit: async (
+      _input: Parameters<OAuthStore['consumeOAuthRateLimit']>[0],
+    ): Promise<boolean> => true,
   } satisfies TestOAuthStore
 
   expireBrowserSession(rawSession: string): void {
@@ -420,6 +422,8 @@ interface BrowserSession {
   rawSession: string
   csrf: string
   html: string
+  location: string
+  slot: string
 }
 
 interface TokenPair {
@@ -469,25 +473,34 @@ function authorizationUrl(patch: Record<string, string> = {}): string {
 }
 
 async function begin(app: Hono, url = authorizationUrl()): Promise<BrowserSession> {
-  const response = await app.request(url)
+  const first = await app.request(url)
+  assert.equal(first.status, 303)
+  assertPrivate(first, true)
+  const location = first.headers.get('location')
+  assert.ok(location)
+  const setCookie = first.headers.get('set-cookie') ?? ''
+  const cookieMatch = /^__Host-1f3d9_oauth_([0-9a-f]{32})=[^;]+;/u.exec(setCookie)
+  assert.ok(cookieMatch)
+  assert.match(setCookie, /; Path=\//i)
+  assert.match(setCookie, /; Secure/i)
+  assert.match(setCookie, /; HttpOnly/i)
+  assert.match(setCookie, /; SameSite=Lax/i)
+  const cookie = setCookie.split(';', 1)[0]!
+  const rawSession = cookie.split('=', 2)[1]!.split('.', 2)[0]!
+
+  const response = await app.request(location!, { headers: { cookie } })
   assert.equal(response.status, 200)
   assertPrivate(response, true)
   assert.match(
     response.headers.get('content-security-policy') ?? '',
     /form-action 'self' https:\/\/chat\.example\.test;/u,
   )
-  const setCookie = response.headers.get('set-cookie') ?? ''
-  assert.match(setCookie, /^__Host-1f3d9_oauth=[^;]+;/)
-  assert.match(setCookie, /; Path=\//i)
-  assert.match(setCookie, /; Secure/i)
-  assert.match(setCookie, /; HttpOnly/i)
-  assert.match(setCookie, /; SameSite=Lax/i)
-  const cookie = setCookie.split(';', 1)[0]!
-  const rawSession = cookie.split('=', 2)[1]!
   const html = await response.text()
   const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1]
   assert.ok(csrf)
-  return { cookie, rawSession, csrf, html }
+  const slot = cookieMatch[1]!
+  assert.match(html, new RegExp(`name="session_cookie" value="${slot}"`, 'u'))
+  return { cookie, rawSession, csrf, html, location, slot }
 }
 
 function assertPrivate(response: Response, html = false): void {
@@ -506,6 +519,10 @@ async function browserPost(
   referer?: string,
   extraHeaders: Record<string, string> = {},
 ): Promise<Response> {
+  const body = fields instanceof URLSearchParams
+    ? new URLSearchParams(fields)
+    : new URLSearchParams(fields)
+  if (!body.has('session_cookie')) body.set('session_cookie', session.slot)
   const headers: Record<string, string> = {
     'content-type': 'application/x-www-form-urlencoded',
     cookie: session.cookie,
@@ -516,7 +533,7 @@ async function browserPost(
   return app.request('/oauth/authorize', {
     method: 'POST',
     headers,
-    body: fields instanceof URLSearchParams ? fields : new URLSearchParams(fields),
+    body,
   })
 }
 
@@ -576,11 +593,171 @@ async function initialPair(app: Hono): Promise<TokenPair> {
   return readTokenPair(await exchangeCode(app, code))
 }
 
+test('OAuth recovers stale proof URLs but stops after two fresh cookies do not return', async () => {
+  const { app, memory } = fixture()
+  const first = await app.request(authorizationUrl())
+  assert.equal(first.status, 303)
+  assertPrivate(first, true)
+  assert.doesNotMatch(await first.text(), /<form|resident_key|type="password"/iu)
+  assert.equal((JSON.parse(memory.safeState()) as { requests: unknown[] }).requests.length, 0)
+  const firstCookie = (first.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+  const firstLocation = first.headers.get('location') ?? ''
+  assert.ok(firstCookie)
+  assert.match(firstLocation, /^\/oauth\/authorize\?/u)
+  assert.equal(new URL(firstLocation, ORIGIN).searchParams.get('state'), STATE)
+
+  const accepted = await app.request(firstLocation, { headers: { cookie: firstCookie } })
+  assert.equal(accepted.status, 200)
+  const acceptedHtml = await accepted.text()
+  assert.match(acceptedHtml, /name="resident_key"[^>]*type="password"/iu)
+  assert.equal((JSON.parse(memory.safeState()) as { requests: unknown[] }).requests.length, 1)
+
+  const separateMemory = new MemoryOAuthStore()
+  const diagnostics: OAuthDiagnosticRecord[] = []
+  const retryApp = appFor(separateMemory, record => diagnostics.push(record))
+  const retry = await retryApp.request(firstLocation)
+  assert.equal(retry.status, 303)
+  assert.doesNotMatch(await retry.text(), /<form|resident_key|type="password"/iu)
+  assert.equal((JSON.parse(separateMemory.safeState()) as { requests: unknown[] }).requests.length, 0)
+  const retryCookie = (retry.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+  const retryLocation = retry.headers.get('location') ?? ''
+  assert.ok(retryCookie)
+  assert.notEqual(retryCookie, firstCookie)
+  assert.notEqual(retryLocation, firstLocation)
+
+  const stopped = await retryApp.request(retryLocation)
+  assert.equal(stopped.status, 403)
+  assertPrivate(stopped, true)
+  assert.equal(stopped.headers.get('x-1f3d9-reason'), 'browser_cookie_not_returned')
+  const stoppedBody = await stopped.text()
+  assert.match(stoppedBody, /cookie did not return after two fresh attempts/iu)
+  assert.match(stoppedBody, /href=/iu)
+  assert.doesNotMatch(stoppedBody, /<form|resident_key|type="password"/iu)
+
+  const staleLocation = new URL(retryLocation, ORIGIN)
+  staleLocation.searchParams.set('_1f3d9_cookie_issued', '0')
+  const recovered = await retryApp.request(`${staleLocation.pathname}${staleLocation.search}`)
+  assert.equal(recovered.status, 303)
+  assertPrivate(recovered, true)
+  assert.equal(recovered.headers.get('x-1f3d9-reason'), null)
+  const recoveredCookie = (recovered.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+  const recoveredLocation = recovered.headers.get('location') ?? ''
+  assert.ok(recoveredCookie)
+  assert.notEqual(recoveredCookie, retryCookie)
+  assert.notEqual(recoveredLocation, retryLocation)
+
+  const acceptedAgain = await retryApp.request(recoveredLocation, { headers: { cookie: recoveredCookie } })
+  assert.equal(acceptedAgain.status, 200)
+  assert.match(await acceptedAgain.text(), /name="resident_key"[^>]*type="password"/iu)
+  assert.equal((JSON.parse(separateMemory.safeState()) as { requests: unknown[] }).requests.length, 1)
+  assert.deepEqual(diagnostics.map(record => record.error_class), ['browser_cookie_not_returned'])
+})
+
+test('refreshing the proven OAuth form reuses its request behind the existing rate limit', async () => {
+  const { app, memory } = fixture()
+  const createAuthorizationRequest = memory.api.createAuthorizationRequest
+  const consumeOAuthRateLimit = memory.api.consumeOAuthRateLimit
+  let createCalls = 0
+  let authorizeRateChecks = 0
+  memory.api.createAuthorizationRequest = async input => {
+    createCalls += 1
+    return createAuthorizationRequest(input)
+  }
+  memory.api.consumeOAuthRateLimit = async input => {
+    if (input.attemptKind === 'authorize') authorizeRateChecks += 1
+    return consumeOAuthRateLimit(input)
+  }
+
+  const first = await app.request(authorizationUrl())
+  const location = first.headers.get('location') ?? ''
+  const cookie = (first.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+  assert.equal(first.status, 303)
+
+  const accepted = await app.request(location, { headers: { cookie } })
+  assert.equal(accepted.status, 200)
+  const acceptedHtml = await accepted.text()
+
+  const refreshed = await app.request(location, { headers: { cookie } })
+  assert.equal(refreshed.status, 200)
+  assert.equal(await refreshed.text(), acceptedHtml)
+  assert.equal(refreshed.headers.get('set-cookie'), null)
+
+  const changed = new URL(location, ORIGIN)
+  changed.searchParams.set('state', 'different-client-state')
+  const mismatched = await app.request(`${changed.pathname}${changed.search}`, { headers: { cookie } })
+  assert.equal(mismatched.status, 400)
+  assert.equal(mismatched.headers.get('x-1f3d9-reason'), 'invalid_request')
+  assert.doesNotMatch(await mismatched.text(), /<form|resident_key|type="password"/iu)
+  assert.equal(createCalls, 1)
+  assert.equal(authorizeRateChecks, 6)
+  assert.equal((JSON.parse(memory.safeState()) as { requests: unknown[] }).requests.length, 1)
+})
+
+test('an expired database request with a retained cookie starts a fresh browser session', async () => {
+  const { app, memory } = fixture()
+  const session = await begin(app)
+  memory.expireBrowserSession(session.rawSession)
+  const createAuthorizationRequest = memory.api.createAuthorizationRequest
+  let collideOnce = true
+  memory.api.createAuthorizationRequest = async input => {
+    if (collideOnce) {
+      collideOnce = false
+      throw Object.assign(new Error('expired session hash still exists'), { code: '23505' })
+    }
+    return createAuthorizationRequest(input)
+  }
+
+  const restarted = await app.request(session.location, { headers: { cookie: session.cookie } })
+  assert.equal(restarted.status, 303)
+  assert.equal(restarted.headers.get('x-1f3d9-reason'), null)
+  const replacementCookie = (restarted.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+  const replacementLocation = restarted.headers.get('location') ?? ''
+  assert.match(replacementCookie, /^__Host-1f3d9_oauth_[0-9a-f]{32}=/u)
+  assert.notEqual(replacementCookie, session.cookie)
+
+  const recovered = await app.request(replacementLocation, {
+    headers: { cookie: replacementCookie },
+  })
+  assert.equal(recovered.status, 200)
+  assert.equal(recovered.headers.get('set-cookie'), null)
+  assert.match(await recovered.text(), /Let this chat enter 1F3D9/iu)
+})
+
+test('reloading a staged signup resumes confirmation without showing its secrets again', async () => {
+  const { app } = fixture()
+  const session = await begin(app)
+  const staged = await browserPost(app, session, {
+    action: 'register',
+    csrf: session.csrf,
+    handle: 'reload-signup',
+    model: '',
+  })
+  assert.equal(staged.status, 200)
+  const stagedPage = await staged.text()
+  assert.match(stagedPage, /Save reload-signup's resident key/iu)
+  const rootKey = stagedPage.match(/1f3d9_sk_[0-9a-f]{48}/u)?.[0]
+  const recoveryCodes = stagedPage.match(/1f3d9_rc_[0-9a-f]{64}/gu) ?? []
+  assert.ok(rootKey)
+  assert.equal(recoveryCodes.length, 8)
+
+  const reloaded = await app.request(session.location, {
+    headers: { cookie: session.cookie },
+  })
+  assert.equal(reloaded.status, 200)
+  assert.equal(reloaded.headers.get('set-cookie'), null)
+  const reloadedPage = await reloaded.text()
+  assert.match(reloadedPage, /Re-enter the saved resident key/iu)
+  assert.match(reloadedPage, /cannot show the resident key or recovery codes again/iu)
+  assert.doesNotMatch(reloadedPage, new RegExp(rootKey, 'u'))
+  for (const recoveryCode of recoveryCodes) {
+    assert.doesNotMatch(reloadedPage, new RegExp(recoveryCode, 'u'))
+  }
+})
+
 test('authorization accepts a bounded language hint without relaxing unknown-field checks', async () => {
   const { app } = fixture()
-  const localized = await app.request(authorizationUrl({ ui_locales: 'en-US' }))
-  assert.equal(localized.status, 200)
-  assertPrivate(localized, true)
+  const localized = await begin(app, authorizationUrl({ ui_locales: 'en-US' }))
+  assert.match(localized.html, /Hosted Chat Flow Test/iu)
 
   const oversized = await app.request(authorizationUrl({ ui_locales: 'a'.repeat(257) }))
   assert.equal(oversized.status, 400)
@@ -609,7 +786,13 @@ test('an unexpected authorization-store failure is bounded and logged without re
     diagnostics: record => diagnostics.push(record),
   })
 
-  const response = await app.request(authorizationUrl())
+  const first = await app.request(authorizationUrl())
+  assert.equal(first.status, 303)
+  assertPrivate(first, true)
+  const cookie = (first.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+  const response = await app.request(first.headers.get('location') ?? '', {
+    headers: { cookie },
+  })
   assert.equal(response.status, 503)
   assertPrivate(response, true)
   assert.match(response.headers.get('x-request-id') ?? '', /^[0-9a-f-]{36}$/i)
@@ -748,25 +931,35 @@ test('current ChatGPT callback-specific CIMD completes PKCE exchange and refresh
     diagnostics: () => undefined,
   })
 
-  const started = await app.request(authorizationUrl({
+  const first = await app.request(authorizationUrl({
     client_id: clientId,
     redirect_uri: redirectUri,
   }))
+  assert.equal(first.status, 303)
+  assertPrivate(first, true)
+  const cookie = (first.headers.get('set-cookie') ?? '').split(';', 1)[0]!
+  const location = first.headers.get('location') ?? ''
+  const slot = /^__Host-1f3d9_oauth_([0-9a-f]{32})=/u.exec(cookie)?.[1]
+  assert.ok(slot)
+  const started = await app.request(location, {
+    headers: { cookie },
+  })
   assert.equal(started.status, 200)
   assertPrivate(started, true)
   assert.match(
     started.headers.get('content-security-policy') ?? '',
     /form-action 'self' https:\/\/chatgpt\.com;/u,
   )
-  const cookie = (started.headers.get('set-cookie') ?? '').split(';', 1)[0]!
   const html = await started.text()
   const csrf = html.match(/name="csrf" value="([^"]+)"/)?.[1]
   assert.ok(csrf)
   const session = {
     cookie,
-    rawSession: cookie.split('=', 2)[1]!,
+    rawSession: cookie.split('=', 2)[1]!.split('.', 2)[0]!,
     csrf,
     html,
+    location,
+    slot,
   }
   const approval = await browserPost(app, session, {
     action: 'link',
@@ -1326,12 +1519,36 @@ test('browser approval rejects wrong origin and CSRF without reflecting the resi
     action: 'link', csrf: session.csrf, resident_key: EXISTING_KEY,
   }, 'https://evil.example')
   assert.equal(wrongOrigin.status, 403)
-  assert.doesNotMatch(await wrongOrigin.text(), new RegExp(EXISTING_KEY, 'i'))
+  assert.equal(wrongOrigin.headers.get('x-1f3d9-error-class'), 'forbidden')
+  assert.equal(wrongOrigin.headers.get('x-1f3d9-reason'), 'untrusted_browser_request')
+  const wrongOriginRequestId = wrongOrigin.headers.get('x-request-id') ?? ''
+  assert.match(wrongOriginRequestId, /^[0-9a-f-]{36}$/iu)
+  const wrongOriginBody = await wrongOrigin.text()
+  assert.match(wrongOriginBody, new RegExp(wrongOriginRequestId, 'u'))
+  assert.doesNotMatch(wrongOriginBody, new RegExp(EXISTING_KEY, 'i'))
   const wrongCsrf = await browserPost(app, session, {
     action: 'link', csrf: 'wrong-csrf', resident_key: EXISTING_KEY,
   })
   assert.equal(wrongCsrf.status, 403)
+  assert.equal(wrongCsrf.headers.get('x-1f3d9-reason'), 'form_token_mismatch')
   assert.doesNotMatch(await wrongCsrf.text(), new RegExp(EXISTING_KEY, 'i'))
+
+  const missingCookie = await app.request('/oauth/authorize', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      origin: ORIGIN,
+    },
+    body: new URLSearchParams({
+      action: 'link',
+      csrf: session.csrf,
+      session_cookie: session.slot,
+      resident_key: EXISTING_KEY,
+    }),
+  })
+  assert.equal(missingCookie.status, 403)
+  assert.equal(missingCookie.headers.get('x-1f3d9-reason'), 'browser_cookie_missing')
+  assert.match(await missingCookie.text(), /lost its private browser cookie/iu)
 })
 
 test('browser approval accepts a same-origin referrer when Origin is withheld', async () => {

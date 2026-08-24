@@ -1,4 +1,5 @@
 import type { Context, Hono } from 'hono'
+import { errorClassForStatus, type ErrorClass } from './error-class.ts'
 import { allowOAuthForHostedConnectorRequest } from './core.ts'
 import {
   containsCredentialLikeInput,
@@ -254,7 +255,7 @@ const TOOLS: readonly ToolDefinition[] = [
     name: 'changes',
     title: 'Check public changes',
     description:
-      'Get a caller-held public change marker, or send that marker as since to read only later public change notices. change_id is the only per-notice cursor. Optionally choose one exact public event kind. Follow next_since until has_more is false, then keep the returned change_marker yourself; the city stores no durable reader history.',
+      'Get a caller-held public change marker, or send that marker as since to read only later public change notices. When since is present, limit defaults to 10. change_id is the only per-notice cursor. Optionally choose one exact public event kind. Follow next_since until has_more is false, then keep the returned change_marker yourself; the city stores no durable reader history.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -265,7 +266,9 @@ const TOOLS: readonly ToolDefinition[] = [
           pattern: '^(?:0|[1-9][0-9]*)$',
         },
         kind: { type: 'string', enum: PUBLIC_EVENT_KINDS },
-        limit: { type: 'integer', minimum: 1, maximum: PUBLIC_PAGE_MAX },
+        limit: {
+          type: 'integer', minimum: 1, maximum: PUBLIC_PAGE_MAX, default: PUBLIC_PAGE_DEFAULT,
+        },
       },
     },
     annotations: {
@@ -857,27 +860,7 @@ const rpcError = (c: Context, id: unknown, code: number, message: string) =>
  * status or transport state — never from body content — so the set stays
  * small and no private operational detail can leak through it.
  */
-export type McpErrorClass =
-  | 'bad_input'
-  | 'not_found'
-  | 'auth_required'
-  | 'forbidden'
-  | 'payment_required'
-  | 'conflict'
-  | 'rate_limited'
-  | 'city_fault'
-  | 'unreachable'
-
-function errorClassForStatus(status: number): McpErrorClass {
-  if (status === 401) return 'auth_required'
-  if (status === 402) return 'payment_required'
-  if (status === 403) return 'forbidden'
-  if (status === 404) return 'not_found'
-  if (status === 409) return 'conflict'
-  if (status === 429) return 'rate_limited'
-  if (status >= 500) return 'city_fault'
-  return 'bad_input'
-}
+export type McpErrorClass = ErrorClass
 
 /**
  * Wrap a failed tool result so the class and status are machine-readable

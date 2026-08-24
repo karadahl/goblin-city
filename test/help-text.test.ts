@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { BROWSER_REFUSAL_REASONS } from '../src/browser-refusal.ts'
 import { FRONTDOOR, LLMS } from '../src/door.ts'
 import { SETUP_HTML } from '../src/human-pages.ts'
 
@@ -99,6 +100,39 @@ test('ChatGPT setup distinguishes browser-only setup from use after configuratio
   assert.match(SETUP_HTML, /mobile browser is fine/iu)
   assert.match(SETUP_HTML, /not inside the ChatGPT mobile app/iu)
   assert.match(SETUP_HTML, /Once the connector is configured, it works in both the app and the browser/iu)
+})
+
+test('public doors name every accepted browser form proof before attempt counters', () => {
+  for (const [name, text] of [
+    ['front door', FRONTDOOR],
+    ['compact machine map', LLMS],
+  ] as const) {
+    assert.match(text, /exact same-origin Origin/iu, `${name}: Origin proof`)
+    assert.match(text, /Origin[^.]{0,120}(?:absent|missing|not sent)[^.]{0,80}null[^.]{0,160}exact same-origin Referer/iu, `${name}: Referer fallback`)
+    assert.match(text, /Sec-Fetch-Site:\s*same-origin/iu, `${name}: fetch site`)
+    assert.match(text, /Sec-Fetch-Mode:\s*navigate/iu, `${name}: fetch mode`)
+    assert.match(text, /Sec-Fetch-Dest:\s*document/iu, `${name}: fetch destination`)
+    assert.match(text, /User-Agent[^.]{0,100}(?:not|isn't|is not)[^.]{0,80}(?:accepted )?proof/iu, `${name}: User-Agent is not proof`)
+    assert.match(text, /(?:proof|check)[^.]{0,160}(?:before[^.]{0,80}attempt counters|does not spend[^.]{0,80}attempt)/iu, `${name}: proof precedes counters`)
+    assert.match(text, /X-1F3D9-Error-Class/iu, `${name}: shared refusal class`)
+    assert.match(text, /X-1F3D9-Reason/iu, `${name}: stable refusal reason`)
+    assert.match(text, /X-Request-ID/iu, `${name}: quotable request reference`)
+    assert.match(text, /HTML[^.]{0,120}(?:shows|includes)[^.]{0,120}reason[^.]{0,80}request ID/iu, `${name}: visible refusal reference`)
+    assert.match(text, /GET[^.]{0,180}Secure[^.]{0,100}cookie[^.]{0,120}303/iu, `${name}: GET cookie proof`)
+    assert.match(text, /keep[^.]{0,80}cookie[^.]{0,120}follow[^.]{0,80}redirect/iu, `${name}: caller redirect requirement`)
+    assert.match(text, /before[^.]{0,100}(?:key field|form)/iu, `${name}: no key field before proof`)
+    assert.match(text, /reissue[^.]{0,80}once/iu, `${name}: one silent retry`)
+    assert.match(text, /stale proof URL[^.]{0,100}(?:fresh|automatically)/iu, `${name}: stale URL recovery`)
+    assert.match(text, /(?:separate|each\s+open) tabs?[^.]{0,100}(?:separate|own) cookies?/iu, `${name}: independent tab cookies`)
+    for (const reason of BROWSER_REFUSAL_REASONS) {
+      assert.match(text, new RegExp(`\\b${reason}\\b`, 'u'), `${name}: ${reason} vocabulary`)
+    }
+  }
+})
+
+test('ChatGPT setup labels operator testing and the embedded-browser automation gap', () => {
+  assert.match(SETUP_HTML, /ChatGPT[^.]{0,180}operator-tested/iu)
+  assert.match(SETUP_HTML, /no automated test[^.]{0,160}embedded ChatGPT browser/iu)
 })
 
 test('public help gives exact action shapes and required combinations', () => {

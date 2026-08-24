@@ -19,10 +19,14 @@ const AUTHORIZE_QUERY = new URLSearchParams({
 
 function fakeStore() {
   const rateLimitCalls: { bucketHash: string; attemptKind: string; maximum: number }[] = []
+  const authorizationSessions = new Set<string>()
   return {
     rateLimitCalls,
-    async createAuthorizationRequest() {},
-    async getAuthorizationRequest() {
+    async createAuthorizationRequest(input: { sessionHash: string }) {
+      authorizationSessions.add(input.sessionHash)
+    },
+    async getAuthorizationRequest(sessionHash: string) {
+      if (!authorizationSessions.has(sessionHash)) return null
       return {
         id: 1,
         client_id: CLIENT_ID,
@@ -71,6 +75,26 @@ function fakeStore() {
   }
 }
 
+async function openAuthorizationPage(
+  app: Hono,
+  headers: Record<string, string>,
+): Promise<{ cookie: string; csrf: string; slot: string }> {
+  const first = await app.request(`/oauth/authorize?${AUTHORIZE_QUERY}`, { headers })
+  assert.equal(first.status, 303)
+  const cookie = first.headers.get('set-cookie')?.split(';', 1)[0]
+  const location = first.headers.get('location')
+  assert.ok(cookie, 'cookie proof should set a private session cookie')
+  assert.ok(location, 'cookie proof should bounce to the same authorization request')
+
+  const page = await app.request(location, { headers: { ...headers, cookie } })
+  assert.equal(page.status, 200)
+  const csrf = /name="csrf" value="([^"]+)"/.exec(await page.text())?.[1]
+  const slot = /^__Host-1f3d9_oauth_([0-9a-f]{32})=/u.exec(cookie)?.[1]
+  assert.ok(csrf, 'authorization page should render a CSRF token after cookie proof')
+  assert.ok(slot, 'cookie proof should use a tab-specific cookie')
+  return { cookie, csrf, slot }
+}
+
 test('new hosted-chat residents use dedicated signup throttles instead of sharing the page-open bucket', async () => {
   const store = fakeStore()
   const app = new Hono()
@@ -88,14 +112,9 @@ test('new hosted-chat residents use dedicated signup throttles instead of sharin
     store,
   })
 
-  const openPage = await app.request(`/oauth/authorize?${AUTHORIZE_QUERY}`, {
-    headers: { 'x-vercel-forwarded-for': '203.0.113.10' },
+  const { cookie, csrf, slot } = await openAuthorizationPage(app, {
+    'x-vercel-forwarded-for': '203.0.113.10',
   })
-  assert.equal(openPage.status, 200)
-  const csrf = /name="csrf" value="([^"]+)"/.exec(await openPage.text())?.[1]
-  assert.ok(csrf, 'authorization page should render a CSRF token')
-  const cookie = openPage.headers.get('set-cookie')?.split(';', 1)[0]
-  assert.ok(cookie, 'authorization page should set a private session cookie')
 
   const register = await app.request('/oauth/authorize', {
     method: 'POST',
@@ -108,6 +127,7 @@ test('new hosted-chat residents use dedicated signup throttles instead of sharin
     body: new URLSearchParams({
       action: 'register',
       csrf,
+      session_cookie: slot,
       handle: 'chatty',
       model: 'hosted-chat',
     }),
@@ -147,13 +167,10 @@ test('OAuth throttles trust only Vercel\'s final client address, not caller forw
   })
 
   for (const spoofed of ['198.51.100.1', '198.51.100.2']) {
-    const response = await app.request(`/oauth/authorize?${AUTHORIZE_QUERY}`, {
-      headers: {
-        'x-forwarded-for': spoofed,
-        'x-vercel-forwarded-for': `${spoofed}, 203.0.113.10`,
-      },
+    await openAuthorizationPage(app, {
+      'x-forwarded-for': spoofed,
+      'x-vercel-forwarded-for': `${spoofed}, 203.0.113.10`,
     })
-    assert.equal(response.status, 200)
   }
 
   assert.equal(store.rateLimitCalls[0]?.bucketHash, store.rateLimitCalls[2]?.bucketHash)
