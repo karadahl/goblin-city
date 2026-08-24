@@ -141,16 +141,51 @@ async function scalarCount(database: Queryable, text: string): Promise<number> {
   return count
 }
 
-/** Refuse any user-defined relation, routine, type, or extension in public. */
+function systemSchema(namespace: string): string {
+  return `(
+    ${namespace}.nspname IN ('pg_catalog', 'information_schema', 'pg_toast')
+    OR pg_is_other_temp_schema(${namespace}.oid)
+    OR ${namespace}.oid = pg_my_temp_schema()
+  )`
+}
+
+const NON_SYSTEM_SCHEMA = systemSchema('namespace')
+
+/**
+ * Refuse persistent user state in every schema, while allowing only PostgreSQL's
+ * documented catalog, information, TOAST, and temporary namespaces. `public` is
+ * allowed as a fresh namespace but any object within it is evidence of prior use.
+ */
 export async function assertEmptyDatabase(database: Queryable): Promise<void> {
-  const [relations, routines, types, extensions] = await Promise.all([
-    scalarCount(database, `SELECT count(*)::integer AS count FROM pg_class AS object JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace WHERE namespace.nspname = 'public'`),
-    scalarCount(database, `SELECT count(*)::integer AS count FROM pg_proc AS object JOIN pg_namespace AS namespace ON namespace.oid = object.pronamespace WHERE namespace.nspname = 'public'`),
-    scalarCount(database, `SELECT count(*)::integer AS count FROM pg_type AS object JOIN pg_namespace AS namespace ON namespace.oid = object.typnamespace WHERE namespace.nspname = 'public' AND object.typtype <> 'p'`),
-    scalarCount(database, `SELECT count(*)::integer AS count FROM pg_extension AS extension JOIN pg_namespace AS namespace ON namespace.oid = extension.extnamespace WHERE namespace.nspname = 'public'`),
-  ])
-  if (relations !== 0 || routines !== 0 || types !== 0 || extensions !== 0) {
-    throw new Error('bootstrap requires an empty database with no public schema objects or extensions')
+  const checks: readonly (readonly [string, string])[] = [
+    ['non-system schemas', `SELECT count(*)::integer AS count FROM pg_namespace AS namespace WHERE namespace.nspname <> 'public' AND NOT ${NON_SYSTEM_SCHEMA}`],
+    ['relations', `SELECT count(*)::integer AS count FROM pg_class AS object JOIN pg_namespace AS namespace ON namespace.oid = object.relnamespace WHERE NOT ${NON_SYSTEM_SCHEMA}`],
+    ['routines', `SELECT count(*)::integer AS count FROM pg_proc AS object JOIN pg_namespace AS namespace ON namespace.oid = object.pronamespace WHERE NOT ${NON_SYSTEM_SCHEMA}`],
+    ['user-defined types', `SELECT count(*)::integer AS count FROM pg_type AS object JOIN pg_namespace AS namespace ON namespace.oid = object.typnamespace WHERE object.typtype <> 'p' AND NOT ${NON_SYSTEM_SCHEMA}`],
+    ['extensions', `SELECT count(*)::integer AS count FROM pg_extension AS extension JOIN pg_namespace AS namespace ON namespace.oid = extension.extnamespace WHERE NOT (extension.extname = 'plpgsql' AND namespace.nspname = 'pg_catalog')`],
+    ['schema-scoped objects', `SELECT count(*)::integer AS count FROM (
+      SELECT object.oid FROM pg_collation AS object JOIN pg_namespace AS namespace ON namespace.oid = object.collnamespace WHERE NOT ${NON_SYSTEM_SCHEMA}
+      UNION ALL SELECT object.oid FROM pg_conversion AS object JOIN pg_namespace AS namespace ON namespace.oid = object.connamespace WHERE NOT ${NON_SYSTEM_SCHEMA}
+      UNION ALL SELECT object.oid FROM pg_operator AS object JOIN pg_namespace AS namespace ON namespace.oid = object.oprnamespace WHERE NOT ${NON_SYSTEM_SCHEMA}
+      UNION ALL SELECT object.oid FROM pg_opclass AS object JOIN pg_namespace AS namespace ON namespace.oid = object.opcnamespace WHERE NOT ${NON_SYSTEM_SCHEMA}
+      UNION ALL SELECT object.oid FROM pg_opfamily AS object JOIN pg_namespace AS namespace ON namespace.oid = object.opfnamespace WHERE NOT ${NON_SYSTEM_SCHEMA}
+      UNION ALL SELECT object.oid FROM pg_ts_config AS object JOIN pg_namespace AS namespace ON namespace.oid = object.cfgnamespace WHERE NOT ${NON_SYSTEM_SCHEMA}
+      UNION ALL SELECT object.oid FROM pg_ts_dict AS object JOIN pg_namespace AS namespace ON namespace.oid = object.dictnamespace WHERE NOT ${NON_SYSTEM_SCHEMA}
+      UNION ALL SELECT object.oid FROM pg_ts_parser AS object JOIN pg_namespace AS namespace ON namespace.oid = object.prsnamespace WHERE NOT ${NON_SYSTEM_SCHEMA}
+      UNION ALL SELECT object.oid FROM pg_ts_template AS object JOIN pg_namespace AS namespace ON namespace.oid = object.tmplnamespace WHERE NOT ${NON_SYSTEM_SCHEMA}
+    ) AS object`],
+    ['database-scoped state', `SELECT count(*)::integer AS count FROM (
+      SELECT object.oid FROM pg_default_acl AS object
+      UNION ALL SELECT object.oid FROM pg_db_role_setting AS object WHERE object.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database())
+      UNION ALL SELECT object.oid FROM pg_publication AS object
+      UNION ALL SELECT object.oid FROM pg_subscription AS object
+      UNION ALL SELECT object.oid FROM pg_event_trigger AS object
+    ) AS object`],
+  ]
+  const results = await Promise.all(checks.map(async ([label, query]) => [label, await scalarCount(database, query)] as const))
+  const evidence = results.filter(([, count]) => count !== 0).map(([label]) => label)
+  if (evidence.length) {
+    throw new Error(`bootstrap requires a pristine database; found existing ${evidence.join(', ')}`)
   }
 }
 

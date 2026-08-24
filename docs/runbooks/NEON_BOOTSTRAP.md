@@ -11,9 +11,17 @@ npm run bootstrap:preview
 npm run bootstrap:production
 ```
 
-They are for an empty Neon database only. They refuse pooled URLs, non-Neon hosts,
-unproven project/branch endpoints, and any public-schema object or extension already in
-the target database. They never reset, drop, truncate, or overwrite an existing database.
+They are for a pristine Neon database only. They refuse pooled URLs, non-Neon hosts,
+unproven project/branch endpoints, and persistent user state in any schema. The check
+rejects non-system schemas, relations, routines, user-defined types, extensions,
+schema-scoped objects, and database-scoped state before DDL. It permits only PostgreSQL's
+`pg_catalog`, `information_schema`, `pg_toast`, and temporary namespaces, plus the empty
+default `public` schema. It also permits the built-in `plpgsql` extension in `pg_catalog`.
+It never resets, drops, truncates, or overwrites an existing database.
+
+Neon documents that new databases include `public`; PostgreSQL documents the catalog and
+information schemas. This check deliberately fails rather than treating any additional
+Neon-specific persistent object as safe. It has not been run against a real Neon database.
 
 ## Required protected environment values
 

@@ -61,11 +61,36 @@ test('reused Neon endpoint verification rejects a wrong project or branch', asyn
   )
 })
 
-test('empty-database check refuses any public object evidence', async () => {
-  const database = { query: async () => ({ rows: [{ count: '0' }] }) }
-  await assertEmptyDatabase(database)
-  let call = 0
-  await assert.rejects(assertEmptyDatabase({ query: async () => ({ rows: [{ count: String(++call === 1 ? 1 : 0) }] }) }), /empty database/)
+test('empty-database check ignores only PostgreSQL system and temporary schemas', async () => {
+  const queries: string[] = []
+  await assertEmptyDatabase({
+    query: async text => {
+      queries.push(text)
+      return { rows: [{ count: '0' }] }
+    },
+  })
+  assert.ok(queries.some(query => query.includes("'pg_catalog', 'information_schema', 'pg_toast'")))
+  assert.ok(queries.some(query => query.includes('pg_is_other_temp_schema')))
+  assert.ok(queries.some(query => query.includes('pg_my_temp_schema()')))
+})
+
+test('empty-database check refuses public and non-system object evidence', async () => {
+  const cases = [
+    ['a user-created schema', 'FROM pg_namespace AS namespace WHERE'],
+    ['a public relation', 'FROM pg_class AS object'],
+    ['a routine outside public', 'FROM pg_proc AS object'],
+    ['a user-defined type outside public', 'FROM pg_type AS object'],
+    ['an extension outside public', 'FROM pg_extension AS extension'],
+  ] as const
+  for (const [label, marker] of cases) {
+    await assert.rejects(
+      assertEmptyDatabase({
+        query: async text => ({ rows: [{ count: text.includes(marker) ? '1' : '0' }] }),
+      }),
+      /pristine database/,
+      label,
+    )
+  }
 })
 
 test('fresh-install verification requires core tables, pg_trgm, and zero residents', async () => {
