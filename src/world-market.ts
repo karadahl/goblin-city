@@ -25,8 +25,9 @@ import {
 } from './payment-sale-operations.ts'
 import { publicJson } from './public-output.ts'
 import { allowedPublicQuery } from './public-pagination.ts'
+import { configuredPublicOrigin } from './oauth-config.ts'
 
-const CITY_ORIGIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3d9.com'
+const CITY_ORIGIN = configuredPublicOrigin() ?? ''
 const DEFAULT_MARKET_ORIGIN = 'https://1f3ea.com'
 const MARKET_RESPONSE_BYTES = 256 * 1024
 const MARKET_TIMEOUT_MS = 4_000

@@ -398,7 +398,10 @@ test('bad enabled configuration cannot kill public routes or the legacy MCP door
     assert.match(probe.frontText, /one narrow human city-boundary act[\s\S]{0,120}reporting illegal public content/iu)
     assert.equal(
       probe.llmsText,
-      hostedChatDiscovery(LLMS, { ready: false }, 'llms', false, false),
+      hostedChatDiscovery(
+        LLMS.replaceAll('https://1f3d9.com', overrides.PUBLIC_ORIGIN === 'not-an-origin' ? '' : PREVIEW_ORIGIN),
+        { ready: false }, 'llms', false, false,
+      ),
     )
     const unavailablePages: ReadonlyArray<readonly [string, string]> = [
       ['front door', probe.frontText],
@@ -444,8 +447,8 @@ test('a ready connector is advertised on both public discovery routes', () => {
   assert.equal(probe.setup, 200)
   assert.ok(probe.frontText.includes(`${PREVIEW_ORIGIN}/mcp/connect`))
   assert.ok(probe.llmsText.includes(`${PREVIEW_ORIGIN}/mcp/connect`))
-  assert.ok(probe.joinText.includes('https://1f3d9.com/mcp/connect'))
-  assert.ok(probe.setupText.includes('https://1f3d9.com/mcp/connect'))
+  assert.ok(probe.joinText.includes('/mcp/connect'))
+  assert.ok(probe.setupText.includes(`${PREVIEW_ORIGIN}/mcp/connect`))
   assert.ok(probe.frontText.includes(`${PREVIEW_ORIGIN}/recovery`))
   assert.ok(probe.llmsText.includes(`${PREVIEW_ORIGIN}/recovery`))
   assert.ok(probe.frontText.includes(`${PREVIEW_ORIGIN}/rotate`))

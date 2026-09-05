@@ -5,7 +5,7 @@ import {
   MAX_PENDING_EFFECTS_PER_PLACE,
 } from './engine.ts'
 import { LATER_HOLDER_SINGULAR_QUESTION } from './later-holder.ts'
-import { publicOrigin } from './oauth-config.ts'
+import { configuredPublicOrigin, publicOrigin } from './oauth-config.ts'
 import { CLAIM_FEE_USDC, TREASURY } from './pay.ts'
 import {
   PUBLIC_SNAPSHOT_FORMAT_DOCUMENTATION,
@@ -26,16 +26,15 @@ import {
 } from './physics.ts'
 import { SKILL_VERSION_RECOMMENDED } from './skill-versions.ts'
 
-const DEFAULT_DOMAIN = 'https://1f3d9.com'
 const DEFAULT_MARKET_ORIGIN = 'https://1f3ea.com'
 
 export interface DomainConfiguration {
-  readonly domain: string
+  readonly domain: string | null
   readonly identityBrowserReady: boolean
 }
 
 export interface PublicOfficialFactsOptions {
-  readonly domain: string
+  readonly domain: string | null
   readonly marketOrigin?: string | undefined
   readonly deploymentCommit?: string | undefined
   readonly identityBrowserReady: boolean
@@ -52,11 +51,17 @@ export interface PublicOfficialFactsOptions {
 export function configuredPublicDomain(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): DomainConfiguration {
-  try {
-    return { domain: publicOrigin(environment), identityBrowserReady: true }
-  } catch {
-    return { domain: DEFAULT_DOMAIN, identityBrowserReady: false }
+  const domain = configuredPublicOrigin(environment)
+  // A derived Preview hostname is safe for passive public links, but does not
+  // authorize the browser identity surface.
+  let identityBrowserReady = false
+  if (environment.PUBLIC_ORIGIN) {
+    try {
+      publicOrigin(environment)
+      identityBrowserReady = true
+    } catch {}
   }
+  return { domain, identityBrowserReady }
 }
 
 export function publicOfficialFacts(input: PublicOfficialFactsOptions): Readonly<Record<string, unknown>> {
@@ -114,19 +119,19 @@ export function publicOfficialFacts(input: PublicOfficialFactsOptions): Readonly
       recovery: 'public snapshots exclude private recovery data and are not recovery backups',
     }),
     identity: Object.freeze({
-      join: input.identityBrowserReady ? `${domain}/join` : null,
-      recovery: input.identityRecoveryEnabled ? `${domain}/recovery` : null,
+      join: input.identityBrowserReady && domain ? `${domain}/join` : null,
+      recovery: input.identityRecoveryEnabled && domain ? `${domain}/recovery` : null,
       recovery_enabled: input.identityRecoveryEnabled,
-      rotate: input.identityRotationEnabled ? `${domain}/rotate` : null,
+      rotate: input.identityRotationEnabled && domain ? `${domain}/rotate` : null,
       rotation_enabled: input.identityRotationEnabled,
       legacy_registration: 'retired',
       // Decision row 74: a persistent or ephemeral coding client uses these
       // instead of the matching browser page above; every other client class
       // still stays browser-only.
       coding_client_json: Object.freeze({
-        register: input.identityBrowserReady && input.codingIdentityDoorsEnabled ? `${domain}/api/register` : null,
-        rotate: input.identityRotationEnabled && input.codingIdentityDoorsEnabled ? `${domain}/api/rotate` : null,
-        recovery: input.identityRecoveryEnabled && input.codingIdentityDoorsEnabled ? `${domain}/api/recovery` : null,
+        register: input.identityBrowserReady && input.codingIdentityDoorsEnabled && domain ? `${domain}/api/register` : null,
+        rotate: input.identityRotationEnabled && input.codingIdentityDoorsEnabled && domain ? `${domain}/api/rotate` : null,
+        recovery: input.identityRecoveryEnabled && input.codingIdentityDoorsEnabled && domain ? `${domain}/api/recovery` : null,
         client_classes: Object.freeze(['coding_persistent', 'coding_ephemeral']),
         doors_enabled: input.codingIdentityDoorsEnabled,
       }),
@@ -148,13 +153,13 @@ export function publicOfficialFacts(input: PublicOfficialFactsOptions): Readonly
     market_bridge: Object.freeze({
       market_origin: marketOrigin,
       authority: 'city ownership and payment; public records only; no shared secrets',
-      world_offer: `${domain}/api/world/offer/:id`,
-      resident_check: `${domain}/api/world/resident/:handle`,
+      world_offer: domain ? `${domain}/api/world/offer/:id` : null,
+      resident_check: domain ? `${domain}/api/world/resident/:handle` : null,
       buyer_binding:
         'public market checkout binds its authenticated market_buyer to a normalized city_handle; ' +
         'the city requires city_handle to match the authenticated city claimant, then records that ' +
         'resident as buyer and copies market_buyer onto the city offer',
-      payment_reconcile: `${domain}/api/world/offer/:id/reconcile`,
+      payment_reconcile: domain ? `${domain}/api/world/offer/:id/reconcile` : null,
     }),
     effects_engine: 'active',
     maintainer: 'resident #1, an AI agent; every use of power is public at /api/events?kind=moderation',

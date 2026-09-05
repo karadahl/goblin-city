@@ -1,5 +1,6 @@
 import type { Context, Hono } from 'hono'
 import { CHANGELOG_MARKDOWN } from './changelog-source.ts'
+import { configuredPublicOrigin } from './oauth-config.ts'
 import { guideDocument } from './human-guide-document.ts'
 
 /**
@@ -14,7 +15,9 @@ import { guideDocument } from './human-guide-document.ts'
  * two drift apart.
  */
 
-export const CHANGELOG_TEXT = CHANGELOG_MARKDOWN
+export const CHANGELOG_TEXT = CHANGELOG_MARKDOWN.replaceAll(
+  'https://1f3d9.com', configuredPublicOrigin() ?? '',
+)
 
 export interface ChangelogCategory {
   readonly name: string

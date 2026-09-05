@@ -1,7 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { PUBLIC_CREDENTIAL_PATTERN_SOURCE } from './credential-safety.ts'
 
-export const OAUTH_RESOURCE = 'https://1f3d9.com/mcp/connect'
+// There is deliberately no checked-in fallback audience. A deployment without
+// an origin is not an OAuth deployment.
+export const OAUTH_RESOURCE = ''
 export const OAUTH_SCOPE = 'city:resident'
 export const OAUTH_AUTHORIZATION_CODE_PREFIX = '1f3d9_ac_'
 export const OAUTH_ACCESS_TOKEN_PREFIX = '1f3d9_at_'
@@ -201,7 +203,8 @@ export function tokenLooksSensitive(value: unknown): boolean {
 }
 
 export function publicOrigin(environment: OAuthEnvironment = process.env): string {
-  const configured = environment.PUBLIC_ORIGIN ?? 'https://1f3d9.com'
+  const configured = environment.PUBLIC_ORIGIN ?? vercelPreviewOrigin(environment)
+  if (!configured) throw new Error('PUBLIC_ORIGIN must be an HTTPS origin')
   let parsed: URL
   try {
     parsed = new URL(configured)
@@ -218,7 +221,27 @@ export function publicOrigin(environment: OAuthEnvironment = process.env): strin
   ) {
     throw new Error('PUBLIC_ORIGIN must be an HTTPS origin')
   }
+  if (parsed.hostname === '1f3d9.com' || parsed.hostname.endsWith('.1f3d9.com')) {
+    throw new Error('PUBLIC_ORIGIN must not identify this deployment as 1f3d9.com')
+  }
   return parsed.origin
+}
+
+function vercelPreviewOrigin(environment: OAuthEnvironment): string | undefined {
+  if (environment.VERCEL !== '1' || environment.VERCEL_ENV !== 'preview') return undefined
+  for (const candidate of [environment.VERCEL_BRANCH_URL, environment.VERCEL_URL]) {
+    if (!candidate || candidate.trim() !== candidate || !candidate.endsWith('.vercel.app')) continue
+    if (/^[a-z0-9][a-z0-9-]*\.vercel\.app$/u.test(candidate)) return `https://${candidate}`
+  }
+  return undefined
+}
+
+export function configuredPublicOrigin(environment: OAuthEnvironment = process.env): string | null {
+  try {
+    return publicOrigin(environment)
+  } catch {
+    return null
+  }
 }
 
 export function oauthResource(environment: OAuthEnvironment = process.env): string {

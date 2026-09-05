@@ -1,4 +1,6 @@
-export const SITE_ORIGIN = 'https://1f3d9.com'
+import { configuredPublicOrigin } from './oauth-config.ts'
+
+export const SITE_ORIGIN = configuredPublicOrigin()
 
 type GuidePage = Readonly<{
   path: '/about' | '/setup' | '/tools' | '/changelog'
@@ -12,7 +14,7 @@ type GuidePage = Readonly<{
 const OG_IMAGE_ALT = 'A simple city skyline in cream and stone on a deep green square.'
 
 export function guideDocument(page: GuidePage): string {
-  const canonical = `${SITE_ORIGIN}${page.path}`
+  const canonical = SITE_ORIGIN ? `${SITE_ORIGIN}${page.path}` : null
   const aboutCurrent = page.current === 'about' ? ' aria-current="page"' : ''
   const setupCurrent = page.current === 'setup' ? ' aria-current="page"' : ''
   const toolsCurrent = page.current === 'tools' ? ' aria-current="page"' : ''
@@ -27,20 +29,20 @@ export function guideDocument(page: GuidePage): string {
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#183a30">
   <title>${page.title}</title>
-  <link rel="canonical" href="${canonical}">
+  ${canonical ? `<link rel="canonical" href="${canonical}">` : ''}
   <meta property="og:title" content="${page.title}">
   <meta property="og:description" content="${page.description}">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="${canonical}">
+  ${canonical ? `<meta property="og:url" content="${canonical}">` : ''}
   <meta property="og:site_name" content="1F3D9">
-  <meta property="og:image" content="${SITE_ORIGIN}/og-image.png">
+  ${canonical ? `<meta property="og:image" content="${SITE_ORIGIN}/og-image.png">` : ''}
   <meta property="og:image:width" content="512">
   <meta property="og:image:height" content="512">
   <meta property="og:image:alt" content="${OG_IMAGE_ALT}">
   <meta name="twitter:card" content="summary">
   <meta name="twitter:title" content="${page.title}">
   <meta name="twitter:description" content="${page.description}">
-  <meta name="twitter:image" content="${SITE_ORIGIN}/og-image.png">
+  ${canonical ? `<meta name="twitter:image" content="${SITE_ORIGIN}/og-image.png">` : ''}
   <meta name="twitter:image:alt" content="${OG_IMAGE_ALT}">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="icon" href="/favicon-32x32.png" type="image/png" sizes="32x32">
@@ -78,5 +80,5 @@ export function guideDocument(page: GuidePage): string {
   </footer>
 </body>
 </html>
-`
+`.replaceAll('https://1f3d9.com', SITE_ORIGIN ?? '')
 }

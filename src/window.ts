@@ -1664,11 +1664,12 @@ export async function windowPage(
       record = null
     }
   }
-  const metadata = createWindowShareMetadata(
-    windowShareMetadataOrigin(configuredPublicDomain(environment).domain, environment),
-    shareRequest,
-    record,
-  )
+  const configuredOrigin = configuredPublicDomain(environment).domain
+  const metadata = configuredOrigin
+    ? createWindowShareMetadata(
+      windowShareMetadataOrigin(configuredOrigin, environment), shareRequest, record,
+    )
+    : null
   const baseHtml = creditPurchasesReady
     ? WINDOW_HTML.replace(
         '      <!-- WINDOW_BUY_LINK -->',

@@ -420,10 +420,13 @@ function shareOrigin(value: string): string {
   return url.origin
 }
 
-const VERCEL_SHARE_HOST = /^1f3d9-[a-z0-9-]+-onetapstudiogames-projects\.vercel\.app$/u
-
-function trustedVercelShareOrigin(value: string | undefined): string | null {
-  if (typeof value !== 'string' || value.trim() !== value || !VERCEL_SHARE_HOST.test(value)) {
+function trustedVercelShareOrigin(value: string | undefined, projectLabel: string): string | null {
+  if (
+    typeof value !== 'string'
+    || value.trim() !== value
+    || !/^[a-z0-9][a-z0-9-]*\.vercel\.app$/u.test(value)
+    || (value !== `${projectLabel}.vercel.app` && !value.startsWith(`${projectLabel}-`))
+  ) {
     return null
   }
   const url = new URL(`https://${value}`)
@@ -432,8 +435,8 @@ function trustedVercelShareOrigin(value: string | undefined): string | null {
 
 /**
  * Production cards stay on the configured public domain. A Vercel Preview whose
- * configured origin is itself a Preview alias uses only Vercel's injected
- * branch or deployment hostname, never the request Host header.
+ * configured origin is itself this project's Preview alias uses only Vercel's
+ * injected branch or deployment hostname, never the request Host header.
  */
 export function windowShareMetadataOrigin(
   configuredOriginValue: string,
@@ -449,8 +452,9 @@ export function windowShareMetadataOrigin(
   ) {
     return configuredOrigin
   }
-  return trustedVercelShareOrigin(environment.VERCEL_BRANCH_URL)
-    ?? trustedVercelShareOrigin(environment.VERCEL_URL)
+  const projectLabel = configured.hostname.slice(0, -'.vercel.app'.length)
+  return trustedVercelShareOrigin(environment.VERCEL_BRANCH_URL, projectLabel)
+    ?? trustedVercelShareOrigin(environment.VERCEL_URL, projectLabel)
     ?? configuredOrigin
 }
 
@@ -616,8 +620,9 @@ function escapeHtmlAttribute(value: string): string {
 
 export function renderWindowShareDocument(
   baseDocument: string,
-  metadata: WindowShareMetadata,
+  metadata: WindowShareMetadata | null,
 ): string {
+  if (metadata === null) return baseDocument
   const values = Object.values(metadata)
   if (values.some(value => (
     typeof value !== 'string' ||

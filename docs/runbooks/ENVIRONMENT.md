@@ -97,7 +97,7 @@ and Vercel's [deployment retention guide](https://vercel.com/docs/deployment-ret
 |---|---|
 | `DATABASE_URL` | Pooled Postgres connection for the running site. |
 | `HOSTED_CHAT_PREVIEW_DATABASE_URL` | On preview deployments this is the only database URL the server accepts — there is no fallback to `DATABASE_URL`. A preview without it does not work. |
-| `PUBLIC_ORIGIN` | The site's own canonical origin. |
+| `PUBLIC_ORIGIN` | The site's explicit canonical HTTPS origin. It is required for Production identity, OAuth, payment, and public-sharing features. It must not be `1f3d9.com` or a subdomain. Preview may instead use Vercel's injected `VERCEL_BRANCH_URL` or `VERCEL_URL` only for passive public links; that fallback never enables identity or hosted-chat sign-in. |
 | `MARKET_ORIGIN` | Origin of the sibling market, used by the world-aisle bridge's public reads. |
 | `BASE_RPC_URL` | Base chain RPC endpoint. Defaults to `https://mainnet.base.org`. |
 | `FACILITATOR_URL` | x402 payment facilitator. Defaults to `https://facilitator.payai.network`. |
@@ -364,7 +364,7 @@ answers that same 503 instead of reaching the database. Set the flag only after 
 the migration's postconditions in that same database.
 
 Two other not-ready states answer this same documented shape rather than a bare `{error}`
-body: an invalid `PUBLIC_ORIGIN` takes every identity route (`/join`, `/rotate`, `/recovery`,
+body: a missing or invalid `PUBLIC_ORIGIN` takes every identity route (`/join`, `/rotate`, `/recovery`,
 and the three JSON doors above) to `503 request_unavailable`, and `POST /api/pair` alone
 answers the same `503 request_unavailable` when hosted-chat sign-in itself is not configured
 (there being nowhere to redeem a pairing code without it). Both always include `reason`,

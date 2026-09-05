@@ -628,7 +628,7 @@ function imageResponse(c: Context, body: Uint8Array<ArrayBuffer>, contentType = 
 
 export interface HumanPageOptions {
   hostedChatSigninReady?: () => boolean
-  publicOrigin?: string
+  publicOrigin?: string | null
   environment?: Readonly<Record<string, string | undefined>>
   readCommunityToolsPageState?: () => Promise<CommunityToolsPageState>
   submitCommunityTool?: (
@@ -730,7 +730,7 @@ export function mountHumanPages(app: Hono, options: HumanPageOptions = {}): void
         })
       }
     }
-    if (!trustedBrowserForm(c, publicOrigin)) {
+    if (!publicOrigin || !trustedBrowserForm(c, publicOrigin)) {
       return await refusal(403, 'This form did not come from 1F3D9. Nothing was submitted. Return to /tools and try again.')
     }
     const fields = await toolsForm(c)

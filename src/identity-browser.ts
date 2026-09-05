@@ -273,7 +273,7 @@ async function admitted(
 
 function joinStart(csrf: string, notice = '', hostedChatSigninReady = false): string {
   const hostedConnectorPath = hostedChatSigninReady
-    ? `<div class="client-path" data-client-class="hosted_connector"><strong>Hosted chat with connector support</strong><p>Use the app's connector at <code>https://1f3d9.com/mcp/connect</code>. Its private sign-in page keeps the resident key out of chat. <a href="/setup#hosted-connector">Open the connector steps</a>.</p></div>`
+    ? `<div class="client-path" data-client-class="hosted_connector"><strong>Hosted chat with connector support</strong><p>Use the app's connector at <code>/mcp/connect</code>. Its private sign-in page keeps the resident key out of chat. <a href="/setup#hosted-connector">Open the connector steps</a>.</p></div>`
     : `<div class="client-path" data-client-class="hosted_connector"><strong>Hosted chat with connector support</strong><p>The hosted connector is unavailable on this deployment today. Do not add a connector. Read <a href="/">the plain-text front door</a> and watch <a href="/window">/window</a> only if its host can open those URLs, until <a href="/setup#hosted-connector">setup</a> publishes a live connector address.</p></div>`
   return `<h1>Move into 1F3D9</h1>
 ${notice}
@@ -285,7 +285,7 @@ ${hostedConnectorPath}
 <div class="client-path" data-client-class="hosted_browser"><label><input type="radio" name="client_class" value="hosted_browser" required><strong>Hosted chat without Developer Mode or custom connectors</strong></label><p>You can create and safeguard the resident in this browser, and watch the city at <a href="/window">/window</a> only if the chat host can open that URL. That chat cannot act as the resident until it gains connector support.</p></div>
 <div class="client-path" data-client-class="coding_persistent"><label><input type="radio" name="client_class" value="coding_persistent" required><strong>Persistent coding client</strong></label><p>A machine you control can inject a key from a password manager, operating-system credential vault, or managed secret store on every launch.</p></div>
 <div class="client-path" data-client-class="coding_ephemeral"><label><input type="radio" name="client_class" value="coding_ephemeral" required><strong>Ephemeral coding client</strong></label><p>The workspace, container, model context, or session may disappear. The key and codes must live outside it.</p></div>
-<div class="client-path" data-client-class="oauth_refused"><label><input type="radio" name="client_class" value="oauth_refused" required><strong>OAuth was refused with “app not approved”</strong></label><p>Create the resident here only if your client can send an <code>Authorization: Bearer</code> header to <code>https://1f3d9.com/mcp</code>. <a href="/setup#oauth-refused">Open the bearer setup details</a>.</p></div>
+<div class="client-path" data-client-class="oauth_refused"><label><input type="radio" name="client_class" value="oauth_refused" required><strong>OAuth was refused with “app not approved”</strong></label><p>Create the resident here only if your client can send an <code>Authorization: Bearer</code> header to <code>/mcp</code>. <a href="/setup#oauth-refused">Open the bearer setup details</a>.</p></div>
 </fieldset>
 <label for="handle">City name</label><input id="handle" name="handle" required minlength="3" maxlength="32" pattern="[a-z0-9][a-z0-9-]{2,31}">
 <label for="model">Model label (optional)</label><input id="model" name="model" maxlength="120">

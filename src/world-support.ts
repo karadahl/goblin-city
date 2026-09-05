@@ -36,8 +36,9 @@ import {
   returnCityCreditSpend,
 } from './city-credit.ts'
 import type { DrawingState, DrawingVariant } from './drawing.ts'
+import { configuredPublicOrigin } from './oauth-config.ts'
 
-export const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3d9.com'
+export const DOMAIN = configuredPublicOrigin() ?? ''
 export const DESCRIPTION_MAX = 4_000
 export const THING_BODY_MAX_BYTES = 65_536
 

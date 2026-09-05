@@ -226,7 +226,7 @@ test('ChatGPT negotiation still requires both public and signed choices', async 
 })
 
 test('PUBLIC_ORIGIN and the derived OAuth resource accept only an exact HTTPS origin', () => {
-  assert.equal(publicOrigin({}), 'https://1f3d9.com')
+  assert.throws(() => publicOrigin({}))
   assert.equal(
     publicOrigin({ PUBLIC_ORIGIN: 'https://preview.example.test' }),
     'https://preview.example.test',
@@ -237,6 +237,8 @@ test('PUBLIC_ORIGIN and the derived OAuth resource accept only an exact HTTPS or
   )
 
   for (const unsafe of [
+    'https://1f3d9.com',
+    'https://preview.1f3d9.com',
     'http://preview.example.test',
     'https://user@preview.example.test',
     'https://preview.example.test/path',

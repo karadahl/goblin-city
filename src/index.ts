@@ -207,6 +207,8 @@ const FOUNDER_DISPUTE_REVIEWS_PER_HOUR = 30
 const FOUNDER_DISPUTE_REVIEW_BODY_BYTES = 512
 const COMMUNITY_TOOL_REVIEW_BODY_BYTES = 256
 
+const originAwarePublicText = (source: string): string => source.replaceAll('https://1f3d9.com', DOMAIN ?? '')
+
 type FounderDisputeReviewBody =
   | Readonly<{ state: 'ok'; bytes: Buffer }>
   | Readonly<{ state: 'empty' }>
@@ -481,7 +483,7 @@ app.onError((error, c) => {
 app.get('/', async c => {
   c.header('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300')
   const frontDoor = hostedChatDiscovery(
-    FRONTDOOR, hostedChatSignin, 'frontdoor', IDENTITY_RECOVERY_ENABLED,
+    originAwarePublicText(FRONTDOOR), hostedChatSignin, 'frontdoor', IDENTITY_RECOVERY_ENABLED,
     IDENTITY_ROTATION_ENABLED, PAYPAL_PURCHASES_READY, CODING_IDENTITY_DOORS_ENABLED,
   )
   const purchaseDoor = withCreditPurchaseDoor(frontDoor)
@@ -505,14 +507,14 @@ app.get('/', async c => {
   }
 })
 app.get('/llms.txt', c => c.text(hostedChatDiscovery(
-  LLMS, hostedChatSignin, 'llms', IDENTITY_RECOVERY_ENABLED,
+  originAwarePublicText(LLMS), hostedChatSignin, 'llms', IDENTITY_RECOVERY_ENABLED,
   IDENTITY_ROTATION_ENABLED, PAYPAL_PURCHASES_READY, CODING_IDENTITY_DOORS_ENABLED,
 )))
 app.get('/robots.txt', c => c.text(ROBOTS))
 app.get('/humans.txt', c => c.text(HUMANS))
 mountHumanPages(app, {
   hostedChatSigninReady: () => hostedChatSignin.ready,
-  publicOrigin: configuredPublicDomain().domain,
+  publicOrigin: DOMAIN,
   readCommunityToolsPageState: async () => {
     const [waitingCount, directory] = await Promise.all([
       readCommunityToolWaitingCount(executeCommunityToolQuery),
@@ -523,7 +525,7 @@ mountHumanPages(app, {
   submitCommunityTool: async (submission, ipHash) =>
     await submitCommunityTool(executeCommunityToolQuery, submission, ipHash),
 })
-mountCityHelpRoute(app)
+mountCityHelpRoute(app, DOMAIN ?? '')
 mountChangelogRoutes(app)
 mountLegalRoutes(app)
 app.get('/buy', c => {
@@ -634,7 +636,7 @@ if (requestedHostedChatSignin.ready) {
 
 if (IDENTITY_BROWSER_READY) {
   mountIdentityRoutes(app, {
-    environment: { ...process.env, PUBLIC_ORIGIN: DOMAIN },
+    environment: { ...process.env, PUBLIC_ORIGIN: DOMAIN! },
     hostedChatSigninReady: hostedChatSignin.ready,
   })
   // Decision row 74: the same identity ceremony, reachable by a coding
@@ -644,7 +646,7 @@ if (IDENTITY_BROWSER_READY) {
   // keep working -- a disabled door answers a documented 503, never a 500.
   if (CODING_IDENTITY_DOORS_ENABLED) {
     mountIdentityApiRoutes(app, {
-      environment: { ...process.env, PUBLIC_ORIGIN: DOMAIN },
+      environment: { ...process.env, PUBLIC_ORIGIN: DOMAIN! },
     })
   } else {
     mountCodingIdentityDoorsDisabled(app)
@@ -717,7 +719,7 @@ mountPayPalCreditRoutes(app, {
   authenticate: authPassive,
   database: runtimeDatabase,
   environment: process.env,
-  publicOrigin: DOMAIN,
+  publicOrigin: DOMAIN ?? '',
 })
 mountLogDrainRoutes(app, {
   environment: process.env,
@@ -748,7 +750,7 @@ mountGazetteRoutes(app, {
 mountGazetteReadingRoutes(app, {
   readIssue: async issueNumber => readCompleteGazetteIssue(runtimeDatabase, issueNumber),
   readIssueFacts: async issueNumber => readGazetteIssueFacts(runtimeDatabase, issueNumber),
-  origin: DOMAIN,
+  origin: DOMAIN ?? '',
   robots: GAZETTE_ROBOTS_POLICY,
 })
 mountWorldRoutes(app)

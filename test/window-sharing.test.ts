@@ -35,9 +35,9 @@ function gazetteShareState(issue: number | null): WindowShareState {
 }
 
 test('share metadata uses only Vercel’s exact injected Preview deployment origin', () => {
-  const configured = 'https://1f3d9-hosted-chat-preview.vercel.app'
-  const branch = '1f3d9-git-feat-growth-sharing-onetapstudiogames-projects.vercel.app'
-  const deployment = '1f3d9-qg56l10xf-onetapstudiogames-projects.vercel.app'
+  const configured = 'https://goblin-city.vercel.app'
+  const branch = 'goblin-city-git-feat-growth-sharing-team.vercel.app'
+  const deployment = 'goblin-city-qg56l10xf-team.vercel.app'
   assert.equal(windowShareMetadataOrigin(configured, {
     VERCEL: '1',
     VERCEL_ENV: 'preview',
@@ -54,7 +54,7 @@ test('share metadata uses only Vercel’s exact injected Preview deployment orig
     { VERCEL: '1', VERCEL_ENV: 'production', VERCEL_URL: deployment },
     { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_URL: 'attacker.example' },
     { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_URL: 'other-project.vercel.app' },
-    { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_URL: '1f3d9-abc.vercel.app' },
+    { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_URL: 'other-project-abc.vercel.app' },
     { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_URL: `${deployment}.evil.example` },
     { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_URL: `${deployment}/path` },
     { VERCEL: '1', VERCEL_ENV: 'preview', VERCEL_URL: `https://${deployment}` },
@@ -63,12 +63,12 @@ test('share metadata uses only Vercel’s exact injected Preview deployment orig
     assert.equal(windowShareMetadataOrigin(configured, environment), configured)
   }
 
-  assert.equal(windowShareMetadataOrigin('https://1f3d9.com', {
+  assert.equal(windowShareMetadataOrigin('https://another-city.vercel.app', {
     VERCEL: '1',
     VERCEL_ENV: 'preview',
     VERCEL_BRANCH_URL: branch,
     VERCEL_URL: deployment,
-  }), 'https://1f3d9.com')
+  }), 'https://another-city.vercel.app')
 })
 
 test('window share paths are clean, stable, and preserve the reproducible public question', () => {

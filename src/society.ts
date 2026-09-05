@@ -55,8 +55,9 @@ import { publicJson } from './public-output.ts'
 import { loadPublicNoteRecord } from './public-records.ts'
 import { safeReadingCostMeter } from './reading-cost.ts'
 import { executeBudgetedExactQuery } from './public-exact-query.ts'
+import { configuredPublicOrigin } from './oauth-config.ts'
 
-const DOMAIN = process.env.PUBLIC_ORIGIN ?? 'https://1f3d9.com'
+const DOMAIN = configuredPublicOrigin() ?? ''
 const NOTE_CHARACTERS = 4_000
 const AGREEMENT_BYTES = 65_536
 const MAX_PARTIES = 32

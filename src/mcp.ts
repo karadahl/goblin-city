@@ -37,6 +37,7 @@ import {
   DRAWING_VARIANTS_MAX,
 } from './drawing.ts'
 import { GAZETTE_ROOM_PROTECTED_ERROR } from './gazette-room.ts'
+import { configuredPublicOrigin } from './oauth-config.ts'
 
 /**
  * Stateless MCP over JSON-RPC 2.0. Tool calls go back through app.request so
@@ -47,7 +48,6 @@ import { GAZETTE_ROOM_PROTECTED_ERROR } from './gazette-room.ts'
  */
 
 const PROTOCOL_DEFAULT = '2025-11-25'
-const DEFAULT_PUBLIC_ORIGIN = 'https://1f3d9.com'
 const OAUTH_SCOPE = 'city:resident'
 const HOSTED_TOOL_NAMESPACE = 'mcp_for_1f3d9_'
 const MCP_SEARCH_CURSOR_MAX_LENGTH = 2_048
@@ -87,23 +87,9 @@ const identityRecoveryEnabled = () => process.env.IDENTITY_RECOVERY_ENABLED === 
 const codingIdentityDoorsEnabled = () => process.env.CODING_IDENTITY_DOORS_ENABLED === 'true'
 
 function publicOrigin(): string {
-  const configured = process.env.PUBLIC_ORIGIN ?? DEFAULT_PUBLIC_ORIGIN
-  try {
-    const parsed = new URL(configured)
-    if (
-      !['http:', 'https:'].includes(parsed.protocol) ||
-      parsed.username ||
-      parsed.password ||
-      (parsed.pathname !== '/' && parsed.pathname !== '') ||
-      parsed.search ||
-      parsed.hash
-    ) {
-      return DEFAULT_PUBLIC_ORIGIN
-    }
-    return parsed.origin
-  } catch {
-    return DEFAULT_PUBLIC_ORIGIN
-  }
+  // Relative pointers remain useful to an MCP client while an unconfigured
+  // deployment must not invent a canonical web identity.
+  return configuredPublicOrigin() ?? ''
 }
 
 const frontDoorUrl = () => `${publicOrigin()}/`
@@ -779,7 +765,7 @@ const TOOLS: readonly ToolDefinition[] = [
     name: 'drawing',
     title: 'Read a drawing',
     description:
-      'Deliberately read one current public place, resident, kind, or thing drawing. The same public JSON read is GET https://1f3d9.com/api/drawing/:type/:id, even when this tool is absent from a connector catalogue. Its companion passive web image GET /api/drawing/:type/:id/thumb.png?rev=<public-change-marker> is a fixed 32x32 nearest-neighbour PNG: an exact current marker is immutable for one year, while Undrawn, Refused, missing, withdrawn, and moderation-hidden presentations return 404. The tool response remains JSON. The state and presentation distinguish Undrawn, Refused, Blank, In progress, and Complete. The response carries the exact palette, all 64 indices, and the canonical eight-row text form, where each row has eight space-separated decimal palette indices and . means transparent. source says none, resident, place, thing, kind_base, or kind_variant; kind sources also return the exact pinned kind id, kind name, revision, and variant name when applicable. Ordinary map, place, window, and census reads do not carry this payload.',
+      'Deliberately read one current public place, resident, kind, or thing drawing. The same public JSON read is GET /api/drawing/:type/:id, even when this tool is absent from a connector catalogue. Its companion passive web image GET /api/drawing/:type/:id/thumb.png?rev=<public-change-marker> is a fixed 32x32 nearest-neighbour PNG: an exact current marker is immutable for one year, while Undrawn, Refused, missing, withdrawn, and moderation-hidden presentations return 404. The tool response remains JSON. The state and presentation distinguish Undrawn, Refused, Blank, In progress, and Complete. The response carries the exact palette, all 64 indices, and the canonical eight-row text form, where each row has eight space-separated decimal palette indices and . means transparent. source says none, resident, place, thing, kind_base, or kind_variant; kind sources also return the exact pinned kind id, kind name, revision, and variant name when applicable. Ordinary map, place, window, and census reads do not carry this payload.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -799,7 +785,7 @@ const TOOLS: readonly ToolDefinition[] = [
     name: 'drawing_history',
     title: 'Read drawing history',
     description:
-      'Make one deliberate bounded read of immutable public drawing revisions for a place, resident, kind, or thing. The same public web read is GET https://1f3d9.com/api/drawing/:type/:id/history, even when this tool is absent from a connector catalogue. The response is JSON data, not rendered images; only the human window turns the data into pictures. Each revision returns exact previous and current state, description, pixels, canonical rows, and provenance, plus its author relation and time. Results are newest first; limit defaults to 20 and is at most 50, and next_before continues to older revisions. Parent moderation hides the parent and its whole history; revisions are never bundled into ordinary reads.',
+      'Make one deliberate bounded read of immutable public drawing revisions for a place, resident, kind, or thing. The same public web read is GET /api/drawing/:type/:id/history, even when this tool is absent from a connector catalogue. The response is JSON data, not rendered images; only the human window turns the data into pictures. Each revision returns exact previous and current state, description, pixels, canonical rows, and provenance, plus its author relation and time. Results are newest first; limit defaults to 20 and is at most 50, and next_before continues to older revisions. Parent moderation hides the parent and its whole history; revisions are never bundled into ordinary reads.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

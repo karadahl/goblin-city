@@ -40,28 +40,28 @@ function escapeHtml(value: string): string {
   })[character]!)
 }
 
-export function renderCityHelpText(document: string): string {
+export function renderCityHelpText(document: string, publicOrigin = ''): string {
   if (!document.includes(CITY_HELP_MARKER)) {
     throw new Error('city help marker is missing from the front door')
   }
   return document.replace(
     CITY_HELP_MARKER,
-    CITY_HELP_DOORS.map(line => `- ${line}`).join('\n'),
+    CITY_HELP_DOORS.map(line => `- ${line.replaceAll('https://1f3d9.com', publicOrigin)}`).join('\n'),
   )
 }
 
-export function renderCityHelpHtml(): string {
+export function renderCityHelpHtml(publicOrigin = ''): string {
   return `<ul class="city-door-list">\n${CITY_HELP_DOORS.map(
-    line => `  <li>${escapeHtml(line)}</li>`,
+    line => `  <li>${escapeHtml(line.replaceAll('https://1f3d9.com', publicOrigin))}</li>`,
   ).join('\n')}\n</ul>`
 }
 
-export function mountCityHelpRoute(app: Hono): void {
+export function mountCityHelpRoute(app: Hono, publicOrigin = ''): void {
   app.get('/api/help', c => {
     if (Object.keys(c.req.queries()).length > 0) {
       return c.json({ error: 'unknown query parameter; omit query options from this route' }, 400)
     }
     c.header('Cache-Control', 'public, max-age=300')
-    return c.json({ doors: CITY_HELP_DOORS })
+    return c.json({ doors: CITY_HELP_DOORS.map(line => line.replaceAll('https://1f3d9.com', publicOrigin)) })
   })
 }
