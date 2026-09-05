@@ -123,7 +123,9 @@
     "migrate:production:community-tool-submission-privacy": "node --experimental-strip-types scripts/migrate.ts --target production --migration community-tool-submission-privacy",
     "migrate:production:identity-json-doors": "node --experimental-strip-types scripts/migrate.ts --target production --migration identity-json-doors",
     "migrate:production:place-quiet": "node --experimental-strip-types scripts/migrate.ts --target production --migration place-quiet",
-    "migrate:production:public-snapshot-quiet": "node --experimental-strip-types scripts/migrate.ts --target production --migration public-snapshot-quiet"
+    "migrate:production:public-snapshot-quiet": "node --experimental-strip-types scripts/migrate.ts --target production --migration public-snapshot-quiet",
+    "bootstrap:preview": "node --experimental-strip-types scripts/bootstrap.ts preview",
+    "bootstrap:production": "node --experimental-strip-types scripts/bootstrap.ts production"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",
