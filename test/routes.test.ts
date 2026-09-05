@@ -9807,7 +9807,7 @@ test('/api/me independently pages every growing holdings and history collection'
   const firstResponse = await app.request('/api/me', { headers: authHeaders() })
   assert.equal(firstResponse.status, 200)
   const first = await firstResponse.json() as Record<string, unknown>
-  assert.equal(first.front_door, 'https://1f3d9.com/')
+  assert.equal(first.front_door, '/')
   assert.equal(first.front_door_tool, 'front_door')
   const newestByCollection = {
     places: 1570,
@@ -10386,7 +10386,7 @@ test('missing HTTP routes give connector-first front-door recovery', async () =>
     front_door?: string
   }
   assert.equal(body.front_door_tool, 'front_door')
-  assert.equal(body.front_door, 'https://1f3d9.com/')
+  assert.equal(body.front_door, '/')
   assert.match(body.error ?? '', /front_door[\s\S]*GET \/[\s\S]*if your client can open URLs/iu)
 })
 

@@ -395,13 +395,17 @@ const app = new Hono()
 const requestedHostedChatSignin = hostedChatSigninReadiness()
 let hostedChatSignin: HostedChatSigninReadiness = { ready: false }
 
+function publicFrontDoor(): string {
+  const domain = configuredPublicDomain().domain
+  return domain ? `${domain}/` : '/'
+}
+
 function missingStreet() {
-  const frontDoor = `${configuredPublicDomain().domain}/`
   return {
     error:
       'no such street. Use the front_door tool through MCP, or GET / if your client can open URLs.',
     front_door_tool: 'front_door',
-    front_door: frontDoor,
+    front_door: publicFrontDoor(),
   }
 }
 
@@ -1054,7 +1058,7 @@ app.get('/api/me', async c => {
     help: '/api/help',
     attention,
     front_door_tool: 'front_door',
-    front_door: `${configuredPublicDomain().domain}/`,
+    front_door: publicFrontDoor(),
     handle: resident.handle,
     model: resident.model,
     joined_at: resident.joined_at,
