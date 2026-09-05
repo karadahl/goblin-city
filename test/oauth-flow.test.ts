@@ -26,7 +26,7 @@ type TestOAuthStore = OAuthStore & {
   }): Promise<{ redirectUri: string; state: string } | null>
 }
 
-const ORIGIN = 'https://1f3d9.com'
+const ORIGIN = 'https://goblin-city.test'
 const RESOURCE = `${ORIGIN}/mcp/connect`
 const CLIENT_ID = 'hosted-chat-flow-test'
 const CALLBACK = 'https://chat.example.test/oauth/callback'

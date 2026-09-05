@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
-process.env.PUBLIC_ORIGIN = 'https://1f3d9.com'
+process.env.PUBLIC_ORIGIN = 'https://goblin-city.test'
 process.env.BASE_RPC_URL = 'https://base-rpc.test'
 process.env.FACILITATOR_URL = 'https://facilitator.test'
 

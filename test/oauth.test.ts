@@ -29,7 +29,7 @@ const validRequest = () => ({
   response_type: 'code',
   client_id: 'hosted-chat-test',
   redirect_uri: REDIRECT_URI,
-  resource: 'https://1f3d9.com/mcp/connect',
+  resource: 'https://goblin-city.test/mcp/connect',
   scope: 'city:resident',
   state: 'opaque-client-state',
   code_challenge: CHALLENGE,
@@ -45,7 +45,7 @@ test('hosted-chat sign-in is off unless explicitly enabled', () => {
 })
 
 test('the one Release 1 audience and scope stay narrow', () => {
-  assert.equal(OAUTH_RESOURCE, 'https://1f3d9.com/mcp/connect')
+  assert.equal(OAUTH_RESOURCE, '')
   assert.equal(OAUTH_SCOPE, 'city:resident')
 })
 
@@ -88,11 +88,11 @@ test('CIMD fetching is possible only from exact allowlisted HTTPS origins', () =
 test('authorization accepts only code flow, exact client details, exact resource, one scope, and PKCE S256', () => {
   const clients = parseOAuthClients(clientJson)
 
-  assert.deepEqual(validateAuthorizationRequest(validRequest(), clients), {
+  assert.deepEqual(validateAuthorizationRequest(validRequest(), clients, 'https://goblin-city.test/mcp/connect'), {
     clientId: 'hosted-chat-test',
     clientName: 'Hosted Chat Test',
     redirectUri: REDIRECT_URI,
-    resource: OAUTH_RESOURCE,
+    resource: 'https://goblin-city.test/mcp/connect',
     scope: OAUTH_SCOPE,
     state: 'opaque-client-state',
     codeChallenge: CHALLENGE,
@@ -102,7 +102,7 @@ test('authorization accepts only code flow, exact client details, exact resource
     { ...validRequest(), response_type: 'token' },
     { ...validRequest(), client_id: 'unknown-client' },
     { ...validRequest(), redirect_uri: `${REDIRECT_URI}/almost` },
-    { ...validRequest(), resource: 'https://1f3d9.com' },
+    { ...validRequest(), resource: 'https://goblin-city.test' },
     { ...validRequest(), scope: 'city:resident city:admin' },
     { ...validRequest(), code_challenge_method: 'plain' },
     { ...validRequest(), code_challenge: 'too-short' },

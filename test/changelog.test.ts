@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || ''
-process.env.PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || 'https://1f3d9.com'
+process.env.PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || 'https://goblin-city.test'
 process.env.HOSTED_CHAT_SIGNIN_ENABLED = process.env.HOSTED_CHAT_SIGNIN_ENABLED || 'false'
 process.env.IDENTITY_RECOVERY_ENABLED = process.env.IDENTITY_RECOVERY_ENABLED || 'false'
 process.env.IDENTITY_ROTATION_ENABLED = process.env.IDENTITY_ROTATION_ENABLED || 'false'
@@ -14,6 +14,7 @@ const {
   CHANGELOG_TEXT,
   parseChangelog,
 } = await import('../src/changelog.ts')
+const { CHANGELOG_MARKDOWN } = await import('../src/changelog-source.ts')
 const { FRONTDOOR, LLMS } = await import('../src/door.ts')
 
 const CATEGORIES = Object.freeze([
@@ -28,7 +29,9 @@ function read(path: string): string {
 
 test('CHANGELOG.md is checked in at the repository root with dated, categorized, one-sentence entries', () => {
   const changelog = read('CHANGELOG.md')
-  assert.equal(changelog, CHANGELOG_TEXT)
+  // The checked-in source preserves historical links. Runtime rendering replaces
+  // a former upstream canonical origin with the configured Goblin City origin.
+  assert.equal(changelog, CHANGELOG_MARKDOWN)
   const entries = parseChangelog(changelog)
   assert.ok(entries.length > 0, 'expected at least one dated entry')
   let previousDate: string | null = null
@@ -99,7 +102,7 @@ test('GET /changelog renders the checked-in file as a guide-styled indexable hum
   assert.match(response.headers.get('cache-control') ?? '', /public, max-age=300/u)
   assert.equal(html, CHANGELOG_HTML)
   assert.match(html, /^<!doctype html>/iu)
-  assert.match(html, /<link rel="canonical" href="https:\/\/1f3d9\.com\/changelog">/iu)
+  assert.match(html, /<link rel="canonical" href="https:\/\/goblin-city\.test\/changelog">/iu)
   assert.match(html, /<link rel="stylesheet" href="\/guide\.css">/iu)
   assert.match(html, /class="changelog-entry"/u)
   assert.match(html, /class="changelog-category"/u)

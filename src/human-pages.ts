@@ -591,7 +591,9 @@ function guideHeaders(c: Context): void {
 
 function guidePage(c: Context, html: string): Response {
   guideHeaders(c)
-  return c.html(html)
+  return c.html(html
+    .replaceAll('https://1f3d9.com', SITE_ORIGIN ?? '')
+    .replaceAll('1f3d9.com', SITE_ORIGIN?.replace(/^https:\/\//u, '') ?? 'this deployment'))
 }
 
 function toolsHeaders(c: Context): void {
@@ -612,7 +614,9 @@ function toolsPage(
   notice: CommunityToolsPageNotice = null,
 ): Response {
   toolsHeaders(c)
-  return c.html(toolsDocument(state, csrf, notice), status)
+  return c.html(toolsDocument(state, csrf, notice)
+    .replaceAll('https://1f3d9.com', SITE_ORIGIN ?? '')
+    .replaceAll('1f3d9.com', SITE_ORIGIN?.replace(/^https:\/\//u, '') ?? 'this deployment'), status)
 }
 
 function guideAssetHeaders(c: Context): void {

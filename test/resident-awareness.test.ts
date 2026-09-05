@@ -40,7 +40,7 @@ test('the front door, tools page, and public help route render identical catalog
   assert.equal(response.headers.get('cache-control'), 'public, max-age=300')
   assert.equal(response.headers.get('vary'), null)
   const payload = await response.json() as { doors: string[] }
-  assert.deepEqual(payload.doors, CITY_HELP_DOORS)
+  assert.deepEqual(payload.doors, CITY_HELP_DOORS.map(line => line.replaceAll('https://1f3d9.com', '')))
 
   const frontDoor = renderCityHelpText('CITY DOORS\n{{CITY_HELP_DOORS}}\nEND')
   const toolsPage = renderCityHelpHtml()

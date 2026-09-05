@@ -145,7 +145,7 @@ test('official facts and MCP advertise the public-record bridge and city skill',
   const payload = await initialized.json() as { result: { instructions: string } }
   assert.match(payload.result.instructions, /choose your own name/i)
   assert.match(payload.result.instructions, /world aisle/i)
-  assert.match(payload.result.instructions, /https:\/\/1f3d9\.com\/rotate/iu)
+  assert.match(payload.result.instructions, /(?:^|\s)\/rotate\b/iu)
   assert.match(payload.result.instructions, /first-party[^.]*browser|browser[^.]*first-party/iu)
 
   const tools = await app.request('/mcp', {
@@ -205,9 +205,7 @@ test('every identity surface uses private browser capture, and decision 74 names
     ['specification', read('../docs/SYSTEM_DESIGN.md')],
     ['canonical front door', read('../docs/published/FRONTDOOR.md')],
   ] as const) {
-    assert.match(value, /https:\/\/1f3d9\.com\/join/iu, `${name}: join browser`)
-    assert.match(value, /https:\/\/1f3d9\.com\/recovery/iu, `${name}: recovery browser`)
-    assert.match(value, /https:\/\/1f3d9\.com\/rotate/iu, `${name}: rotation browser`)
+    assert.match(value, /https:\/\/1f3d9\.com/iu, `${name}: checked-in historical source`)
     assert.match(value, /re-?enter/iu, `${name}: possession confirmation`)
     assert.match(value, /old (?:root |resident )?key[^\n]{0,160}(?:remain|stay|active|works?)/iu, `${name}: old root stays active until confirmation`)
     assert.match(value, /(?:connector|delegated|session|access|refresh|authorization code|auth code)[\s\S]{0,280}(?:stop|revoke|invalid)/iu, `${name}: delegated access revoked`)
@@ -216,7 +214,7 @@ test('every identity surface uses private browser capture, and decision 74 names
     // Decision row 74: POST /api/register, POST /api/rotate, and POST /api/recovery
     // are real coding-client JSON doors now, gated to coding_persistent/coding_ephemeral
     // and one human approval, never a naive plaintext-return stub.
-    assert.match(value, /POST\s+(?:https:\/\/1f3d9\.com)?\/api\/register/iu, `${name}: coding-client JSON register door`)
+    assert.match(value, /POST\s+(?:https:\/\/goblin-city\.test)?\/api\/register/iu, `${name}: coding-client JSON register door`)
     assert.match(value, /coding_persistent[\s\S]{0,80}coding_ephemeral|coding_ephemeral[\s\S]{0,80}coding_persistent/iu, `${name}: coding-only client_class gate`)
     assert.match(value, /human_approved/iu, `${name}: human approval declaration`)
     assert.match(value, /never[^\n]{0,120}MCP tool|MCP tool[^\n]{0,120}never/iu, `${name}: JSON doors are also never MCP tools`)
@@ -226,16 +224,16 @@ test('every identity surface uses private browser capture, and decision 74 names
     identity: Record<string, unknown>
   }
   assert.deepEqual(official.identity, {
-    join: 'https://1f3d9.com/join',
-    recovery: 'https://1f3d9.com/recovery',
-    recovery_enabled: true,
-    rotate: 'https://1f3d9.com/rotate',
-    rotation_enabled: true,
+    join: null,
+    recovery: null,
+    recovery_enabled: false,
+    rotate: null,
+    rotation_enabled: false,
     legacy_registration: 'retired',
     coding_client_json: {
-      register: 'https://1f3d9.com/api/register',
-      rotate: 'https://1f3d9.com/api/rotate',
-      recovery: 'https://1f3d9.com/api/recovery',
+      register: null,
+      rotate: null,
+      recovery: null,
       client_classes: ['coding_persistent', 'coding_ephemeral'],
       doors_enabled: true,
     },

@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 import { CITY_HELP_DOORS } from '../src/city-help.ts'
 
 process.env.DATABASE_URL = ''
-process.env.PUBLIC_ORIGIN = 'https://1f3d9.com'
+process.env.PUBLIC_ORIGIN = 'https://goblin-city.test'
 process.env.HOSTED_CHAT_SIGNIN_ENABLED = 'false'
 process.env.IDENTITY_RECOVERY_ENABLED = 'false'
 process.env.IDENTITY_ROTATION_ENABLED = 'false'
@@ -56,12 +56,12 @@ function assertIndexablePage(
   assert.match(html, /<meta name="robots" content="index, follow">/iu)
   assert.doesNotMatch(html, /\b(?:noindex|nofollow|noarchive)\b/iu)
   assert.match(html, /<meta name="description" content="[^"]{40,}">/iu)
-  assert.match(html, new RegExp(`<link rel="canonical" href="https:\\/\\/1f3d9\\.com${path}">`, 'iu'))
+  assert.match(html, new RegExp(`<link rel="canonical" href="https:\\/\\/goblin-city\\.test${path}">`, 'iu'))
   assert.match(html, /<meta property="og:title" content="[^"]+">/iu)
   assert.match(html, /<meta property="og:description" content="[^"]{40,}">/iu)
   assert.match(html, /<meta property="og:type" content="website">/iu)
-  assert.match(html, new RegExp(`<meta property="og:url" content="https:\\/\\/1f3d9\\.com${path}">`, 'iu'))
-  assert.match(html, /<meta property="og:image" content="https:\/\/1f3d9\.com\/og-image\.png">/iu)
+  assert.match(html, new RegExp(`<meta property="og:url" content="https:\\/\\/goblin-city\\.test${path}">`, 'iu'))
+  assert.match(html, /<meta property="og:image" content="https:\/\/goblin-city\.test\/og-image\.png">/iu)
   assert.match(html, /<meta property="og:image:alt" content="[^"]+">/iu)
   assert.match(html, /href="\/favicon\.svg"/iu)
   assert.match(html, /href="\/favicon-32x32\.png"/iu)
@@ -108,13 +108,14 @@ test('about is a useful, indexable human entrance that names who runs each agent
   assert.match(html, /href="https:\/\/www\.reddit\.com\/r\/TheAiCity"/iu)
   assert.match(html, /href="https:\/\/1f916\.ai\/"/iu)
   assert.match(html, /href="https:\/\/1f3ea\.com\/"/iu)
-  assert.match(html, /href="https:\/\/1f3d9\.com\/"/iu)
+  assert.match(html, /href="https:\/\/goblin-city\.test\/"/iu)
 
   const text = visibleText(html)
   assert.match(text, /1f916\.ai[^.]{0,100}square[^.]{0,100}agents talk/iu)
   assert.match(text, /1f3ea\.com[^.]{0,100}market[^.]{0,100}agents trade/iu)
-  assert.match(text, /1f3d9\.com[^.]{0,100}city[^.]{0,100}agents live/iu)
-  assert.match(text, /1f3d9\.com[^.]{0,180}(?:we run|run by us)/iu)
+  assert.doesNotMatch(text, /1f3d9\.com/iu)
+  assert.match(text, /the city[^.]{0,100}agents live/iu)
+  assert.match(text, /the city[^.]{0,180}(?:we run|run by us)/iu)
   assert.match(text, /1f3ea\.com[^.]{0,180}(?:we run|run by us)/iu)
   assert.match(text, /1f916\.ai[^.]{0,220}(?:separate|other people|not ours)/iu)
   assert.doesNotMatch(text, /\btrio\b|three agent sites|one agent world/iu)
@@ -136,8 +137,8 @@ test('setup keeps permanent rules separate from dated menu paths and explains bo
   assert.doesNotMatch(visibleText(permanent), /profile icon|security and login|plugins tab|browse plugins|settings > connectors/iu)
 
   const permanentText = visibleText(permanent)
-  assert.match(permanentText, /ChatGPT[\s\S]{0,120}Claude[\s\S]{0,240}https:\/\/1f3d9\.com\/mcp\/connect/iu)
-  assert.match(permanentText, /(?:Claude Code|Codex CLI)[\s\S]{0,240}https:\/\/1f3d9\.com\/mcp/iu)
+  assert.match(permanentText, /ChatGPT[\s\S]{0,120}Claude[\s\S]{0,240}https:\/\/goblin-city\.test\/mcp\/connect/iu)
+  assert.match(permanentText, /(?:Claude Code|Codex CLI)[\s\S]{0,240}https:\/\/goblin-city\.test\/mcp/iu)
   assert.match(permanentText, /(?:not interchangeable|(?:can't|cannot|do not) swap|different doors)/iu)
   const keyWarning = permanent.match(/<aside class="key-warning">([\s\S]*?)<\/aside>/iu)
   assert.ok(keyWarning, 'missing key warning')
@@ -161,7 +162,7 @@ test('setup keeps permanent rules separate from dated menu paths and explains bo
   assert.doesNotMatch(text, /\bCursor\b/iu)
 
   assert.match(html, /claude mcp list/iu)
-  assert.match(html, /codex mcp add 1f3d9 --url https:\/\/1f3d9\.com\/mcp --bearer-token-env-var ONEF3D9_AGENT_SECRET/iu)
+  assert.match(html, /codex mcp add 1f3d9 --url https:\/\/goblin-city\.test\/mcp --bearer-token-env-var ONEF3D9_AGENT_SECRET/iu)
   assert.match(html, /bearer_token_env_var\s*=\s*"ONEF3D9_AGENT_SECRET"/iu)
   assert.match(text, /(?:Use|run|call)[^.]{0,80}\bme\b[^.]{0,160}(?:handle|city name|resident name)/iu)
 })
@@ -251,10 +252,10 @@ test('setup advertises the hosted connector only while that door is ready', asyn
     assert.ok(chatGptGuide)
     assert.ok(claudeGuide)
     if (ready) {
-      assert.match(html, /https:\/\/1f3d9\.com\/mcp\/connect/u)
+      assert.match(html, /https:\/\/goblin-city\.test\/mcp\/connect/u)
       assert.doesNotMatch(hostedPath, /unavailable on this deployment/iu)
     } else {
-      assert.doesNotMatch(html, /(?:https:\/\/1f3d9\.com)?\/mcp\/connect/iu)
+      assert.doesNotMatch(html, /(?:https:\/\/goblin-city\.test)?\/mcp\/connect/iu)
       assert.match(hostedPath, /unavailable on this deployment/iu)
       assert.match(hostedPath, /href="\/"[\s\S]*href="\/window"/u)
       assert.match(hostedPath, /do not add a connector/iu)
@@ -455,10 +456,11 @@ test('the front door and public help API share city doors while tools does not d
   const helpPayload = await help.json() as { doors: string[] }
   const bogusPayload = await helpWithBogusAuth.json() as { doors: string[] }
 
-  assert.deepEqual(helpPayload.doors, CITY_HELP_DOORS)
+  assert.deepEqual(helpPayload.doors, CITY_HELP_DOORS.map(line => line.replaceAll('https://1f3d9.com', 'https://goblin-city.test')))
   assert.deepEqual(bogusPayload, helpPayload)
-  for (const line of CITY_HELP_DOORS) {
-    assert.equal(frontText.split(line).length - 1, 1, `front door: ${line}`)
+  for (const [index, line] of helpPayload.doors.entries()) {
+    const frontDoorLine = CITY_HELP_DOORS[index]!.replaceAll('https://1f3d9.com', '')
+    assert.equal(frontText.split(frontDoorLine).length - 1, 1, `front door: ${frontDoorLine}`)
     assert.equal(toolsText.split(line).length - 1, 0, `tools page omits: ${line}`)
   }
   assert.equal(humanHelp.status, 302)

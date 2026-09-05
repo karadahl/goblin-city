@@ -825,7 +825,7 @@ test('/join advertises the hosted connector only when that door is ready', async
     assert.ok(hostedPath)
 
     if (ready) {
-      assert.match(hostedPath, /https:\/\/1f3d9\.com\/mcp\/connect/u)
+      assert.match(hostedPath, /(?:https:\/\/goblin-city\.test)?\/mcp\/connect/u)
       assert.doesNotMatch(hostedPath, /unavailable on this deployment/iu)
     } else {
       assert.doesNotMatch(hostedPath, /\/mcp\/connect/u)

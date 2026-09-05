@@ -10,7 +10,7 @@ const AUTHORIZE_QUERY = new URLSearchParams({
   response_type: 'code',
   client_id: CLIENT_ID,
   redirect_uri: REDIRECT_URI,
-  resource: 'https://1f3d9.com/mcp/connect',
+  resource: 'https://goblin-city.test/mcp/connect',
   scope: 'city:resident',
   state: 'opaque-client-state',
   code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
@@ -32,7 +32,7 @@ function fakeStore() {
         client_id: CLIENT_ID,
         client_display_name: 'Hosted Chat Test',
         redirect_uri: REDIRECT_URI,
-        resource: 'https://1f3d9.com/mcp/connect',
+        resource: 'https://goblin-city.test/mcp/connect',
         scope: 'city:resident',
         state: 'opaque-client-state',
         code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
@@ -114,7 +114,7 @@ test('new hosted-chat residents use dedicated signup throttles instead of sharin
     environment: {
       HOSTED_CHAT_SIGNIN_ENABLED: 'true',
       VERCEL: '1',
-      PUBLIC_ORIGIN: 'https://1f3d9.com',
+      PUBLIC_ORIGIN: 'https://goblin-city.test',
       HOSTED_CHAT_OAUTH_CLIENTS: JSON.stringify([{
         client_id: CLIENT_ID,
         client_name: 'Hosted Chat Test',
@@ -132,7 +132,7 @@ test('new hosted-chat residents use dedicated signup throttles instead of sharin
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
-      origin: 'https://1f3d9.com',
+      origin: 'https://goblin-city.test',
       cookie,
       'x-vercel-forwarded-for': '203.0.113.10',
     },
@@ -167,7 +167,7 @@ test('OAuth throttles trust only Vercel\'s final client address, not caller forw
     environment: {
       HOSTED_CHAT_SIGNIN_ENABLED: 'true',
       VERCEL: '1',
-      PUBLIC_ORIGIN: 'https://1f3d9.com',
+      PUBLIC_ORIGIN: 'https://goblin-city.test',
       HOSTED_CHAT_OAUTH_CLIENTS: JSON.stringify([{
         client_id: CLIENT_ID,
         client_name: 'Hosted Chat Test',

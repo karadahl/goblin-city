@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
-process.env.PUBLIC_ORIGIN = 'https://1f3d9.com'
+process.env.PUBLIC_ORIGIN = 'https://goblin-city.test'
 delete process.env.HOSTED_CHAT_SIGNIN_ENABLED
 delete process.env.HOSTED_CHAT_OAUTH_CLIENTS
 delete process.env.HOSTED_CHAT_CIMD_ORIGINS

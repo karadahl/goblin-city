@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
-process.env.PUBLIC_ORIGIN = 'https://1f3d9.com'
+process.env.PUBLIC_ORIGIN = 'https://goblin-city.test'
 process.env.HOSTED_CHAT_SIGNIN_ENABLED = 'true'
 process.env.HOSTED_CHAT_OAUTH_CLIENTS = JSON.stringify([{
   client_id: 'hosted-chat-test',
@@ -24,7 +24,7 @@ const authorizeUrl = (patch: Record<string, string> = {}) => {
     response_type: 'code',
     client_id: 'hosted-chat-test',
     redirect_uri: 'https://chat.example.test/oauth/callback',
-    resource: 'https://1f3d9.com/mcp/connect',
+    resource: 'https://goblin-city.test/mcp/connect',
     scope: 'city:resident',
     state: 'opaque-client-state',
     code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
@@ -48,8 +48,8 @@ test('RFC 9728 metadata names only the MCP resource and the city authorization s
   assert.equal(response.status, 200)
   assert.equal(response.headers.get('access-control-allow-origin'), '*')
   assert.deepEqual(await response.json(), {
-    resource: 'https://1f3d9.com/mcp/connect',
-    authorization_servers: ['https://1f3d9.com'],
+    resource: 'https://goblin-city.test/mcp/connect',
+    authorization_servers: ['https://goblin-city.test'],
     bearer_methods_supported: ['header'],
     scopes_supported: ['city:resident'],
   })
@@ -60,10 +60,10 @@ test('RFC 8414 metadata advertises code plus refresh, PKCE S256, and no registra
 
   assert.equal(response.status, 200)
   const metadata = await response.json() as Record<string, unknown>
-  assert.equal(metadata.issuer, 'https://1f3d9.com')
-  assert.equal(metadata.authorization_endpoint, 'https://1f3d9.com/oauth/authorize')
-  assert.equal(metadata.token_endpoint, 'https://1f3d9.com/oauth/token')
-  assert.equal(metadata.revocation_endpoint, 'https://1f3d9.com/oauth/revoke')
+  assert.equal(metadata.issuer, 'https://goblin-city.test')
+  assert.equal(metadata.authorization_endpoint, 'https://goblin-city.test/oauth/authorize')
+  assert.equal(metadata.token_endpoint, 'https://goblin-city.test/oauth/token')
+  assert.equal(metadata.revocation_endpoint, 'https://goblin-city.test/oauth/revoke')
   assert.deepEqual(metadata.response_types_supported, ['code'])
   assert.deepEqual(metadata.grant_types_supported, ['authorization_code', 'refresh_token'])
   assert.deepEqual(metadata.code_challenge_methods_supported, ['S256'])
@@ -97,7 +97,7 @@ test('OAuth browser and token preflights never inherit the public wildcard CORS 
 test('authorization rejects near-match return addresses and resources before touching storage', async () => {
   for (const url of [
     authorizeUrl({ redirect_uri: 'https://chat.example.test/oauth/callback/near-match' }),
-    authorizeUrl({ resource: 'https://1f3d9.com' }),
+    authorizeUrl({ resource: 'https://goblin-city.test' }),
     authorizeUrl({ code_challenge_method: 'plain' }),
   ]) {
     const response = await app.request(url)
@@ -118,7 +118,7 @@ test('an unapproved OAuth client gets the bearer-key route and front door at the
   assert.match(body, /href="\/setup#oauth-refused"/u)
   assert.match(body, /href="\/join"/u)
   assert.match(body, /Authorization:\s*Bearer/iu)
-  assert.match(body, /https:\/\/1f3d9\.com\/mcp\b/u)
+  assert.match(body, /https:\/\/goblin-city\.test\/mcp\b/u)
   assert.match(body, /href="\/"[^>]*>[^<]*front door/iu)
   assert.match(
     body,
@@ -142,7 +142,7 @@ test('browser approval POST needs its private cookie, CSRF value, and same-site 
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
-      origin: 'https://1f3d9.com',
+      origin: 'https://goblin-city.test',
     },
     body,
   })
@@ -187,7 +187,7 @@ test('an unauthenticated protected MCP call returns the OAuth discovery challeng
   assert.equal(response.status, 401)
   const challenge = response.headers.get('www-authenticate') ?? ''
   assert.match(challenge, /^Bearer\b/i)
-  assert.match(challenge, /resource_metadata="https:\/\/1f3d9\.com\/\.well-known\/oauth-protected-resource\/mcp\/connect"/i)
+  assert.match(challenge, /resource_metadata="https:\/\/goblin-city\.test\/\.well-known\/oauth-protected-resource\/mcp\/connect"/i)
   assert.match(challenge, /scope="city:resident"/i)
   assert.doesNotMatch(await response.text(), /1f3d9_(?:sk|at|rt|ac)_/i)
 })

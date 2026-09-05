@@ -240,7 +240,7 @@ function startupProbe(overrides: Record<string, string | undefined>) {
   `
   const environment = { ...process.env }
   environment.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
-  environment.PUBLIC_ORIGIN = 'https://1f3d9.com'
+  environment.PUBLIC_ORIGIN = 'https://goblin-city.test'
   environment.HOSTED_CHAT_SIGNIN_ENABLED = 'false'
   for (const name of [
     'PAYPAL_CLIENT_ID', 'PAYPAL_CLIENT_SECRET', 'PAYPAL_ENV', 'PAYPAL_WEBHOOK_ID',

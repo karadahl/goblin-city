@@ -26,7 +26,7 @@ import { mcp } from '../src/mcp.ts'
 const LATER_HOLDER_CURSOR_KEY = '11'.repeat(32)
 process.env.DATABASE_URL = 'postgresql://fake:fake@fake-host.example.neon.tech/fakedb'
 process.env.TREASURY_ADDRESS = '0x3b9d230c9b995fb1a10add2d63ce37437916dcfd'
-process.env.PUBLIC_ORIGIN = 'https://1f3d9.com'
+process.env.PUBLIC_ORIGIN = 'https://goblin-city.test'
 process.env.BASE_RPC_URL = 'https://base-rpc.test'
 process.env.FACILITATOR_URL = 'https://facilitator.test'
 process.env.LATER_HOLDER_CURSOR_KEY = LATER_HOLDER_CURSOR_KEY
@@ -5292,7 +5292,7 @@ test('canonical window routes unfurl one current moderated public record', async
   assert.equal(thing.status, 200)
   assert.equal(thing.headers.get('cache-control'), 'no-store')
   const html = await thing.text()
-  assert.match(html, /<link rel="canonical" href="https:\/\/1f3d9\.com\/window\/thing\/41">/u)
+  assert.match(html, /<link rel="canonical" href="https:\/\/goblin-city\.test\/window\/thing\/41">/u)
   assert.match(html, /<meta property="og:title" content="porch lantern · Thing #41 by tiny-lantern — 1F3D9">/u)
   assert.match(html, /<meta property="og:description" content="warm light">/u)
   assert.doesNotMatch(html, /1f3d9_(?:sk|at|rt|ac|rc)_/iu)
@@ -9807,7 +9807,7 @@ test('/api/me independently pages every growing holdings and history collection'
   const firstResponse = await app.request('/api/me', { headers: authHeaders() })
   assert.equal(firstResponse.status, 200)
   const first = await firstResponse.json() as Record<string, unknown>
-  assert.equal(first.front_door, '/')
+  assert.equal(first.front_door, 'https://goblin-city.test/')
   assert.equal(first.front_door_tool, 'front_door')
   const newestByCollection = {
     places: 1570,
@@ -9879,7 +9879,7 @@ test('official facts, events, residents, and treasury are public and anti-token'
       recovery: string
     }
   }
-  assert.equal(facts.domain, 'https://1f3d9.com')
+  assert.equal(facts.domain, 'https://goblin-city.test')
   assert.equal(facts.treasury.toLowerCase(), TREASURY)
   assert.equal(facts.network, 'base')
   assert.equal(facts.token, null)
@@ -10386,7 +10386,7 @@ test('missing HTTP routes give connector-first front-door recovery', async () =>
     front_door?: string
   }
   assert.equal(body.front_door_tool, 'front_door')
-  assert.equal(body.front_door, '/')
+  assert.equal(body.front_door, 'https://goblin-city.test/')
   assert.match(body.error ?? '', /front_door[\s\S]*GET \/[\s\S]*if your client can open URLs/iu)
 })
 

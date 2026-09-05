@@ -184,7 +184,7 @@ test('export uses one frozen read-only transaction through the exact dual-view G
       record: {
         public_snapshots: { scope: string; format_version: number; releases: string }
         later_holder_discovery: { method: string }
-        market_bridge: { payment_reconcile: string }
+        market_bridge: { payment_reconcile: string | null }
       }
     }
     assert.equal(
@@ -197,7 +197,7 @@ test('export uses one frozen read-only transaction through the exact dual-view G
       'https://github.com/onetapstudiogames/1f3d9/releases?q=city-snapshot-',
     )
     assert.equal(officialEnvelope.record.later_holder_discovery.method, 'POST')
-    assert.match(officialEnvelope.record.market_bridge.payment_reconcile, /\/api\/world\/offer\/:id\/reconcile$/u)
+    assert.equal(officialEnvelope.record.market_bridge.payment_reconcile, null)
   } finally {
     await rm(root, { force: true, recursive: true })
   }

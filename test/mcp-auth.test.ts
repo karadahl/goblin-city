@@ -16,12 +16,12 @@ import {
 import { mcp } from '../src/mcp.ts'
 import { PUBLIC_EVENT_KINDS } from '../src/public-events.ts'
 
-const PUBLIC_ORIGIN = 'https://1f3d9.com'
+const PUBLIC_ORIGIN = 'https://goblin-city.test'
 const LEGACY_SECRET = `1f3d9_sk_${'ab'.repeat(24)}`
 const OAUTH_ACCESS_TOKEN = `1f3d9_at_${'cd'.repeat(32)}`
 const RESOURCE_METADATA = `${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource/mcp/connect`
 const FRONT_DOOR_POINTER =
-  'Lost? Read the city front door with the front_door tool, or at https://1f3d9.com/ if your client can open URLs.'
+  'Lost? Read the city front door with the front_door tool, or at https://goblin-city.test/ if your client can open URLs.'
 const OAUTH_SCHEME = { type: 'oauth2', scopes: ['city:resident'] } as const
 const NOAUTH_SCHEME = { type: 'noauth' } as const
 
@@ -563,7 +563,7 @@ test('every authenticated MCP surface carries one quiet front-door pointer', asy
       front_door?: string
       front_door_tool?: string
     }
-    assert.equal(badCallBody.front_door, 'https://1f3d9.com/')
+    assert.equal(badCallBody.front_door, 'https://goblin-city.test/')
     assert.equal(badCallBody.front_door_tool, 'front_door')
 
     const unknownMethod = await rpc(
@@ -587,7 +587,7 @@ test('every authenticated MCP surface carries one quiet front-door pointer', asy
     )
     assert.equal(
       unknownMethod.error.data?.front_door,
-      'https://1f3d9.com/',
+      'https://goblin-city.test/',
       `${path}: unknown method front door`,
     )
     assert.equal(
@@ -617,7 +617,7 @@ test('every authenticated MCP surface carries one quiet front-door pointer', asy
     )
     assert.equal(
       unknownTool.error.data?.front_door,
-      'https://1f3d9.com/',
+      'https://goblin-city.test/',
       `${path}: unknown tool front door`,
     )
     assert.equal(
@@ -689,7 +689,7 @@ test('successful me results preserve connector and URL front-door pointers on bo
         front_door?: string
         front_door_tool?: string
       }
-      assert.equal(payload.front_door, 'https://1f3d9.com/', path)
+      assert.equal(payload.front_door, 'https://goblin-city.test/', path)
       assert.equal(payload.front_door_tool, 'front_door', path)
     }
   } finally {
@@ -1498,8 +1498,8 @@ test('feature off public door says to use /mcp/connect for sign-in instead of pr
   assert.equal(response.result.isError, true)
   const text = response.result.content[0]?.text ?? ''
   assert.match(text, /public 1F3D9 MCP door/i)
-  assert.match(text, /https:\/\/1f3d9\.com\/mcp\b/)
-  assert.match(text, /https:\/\/1f3d9\.com\/mcp\/connect\b/)
+  assert.match(text, /https:\/\/goblin-city\.test\/mcp\b/)
+  assert.match(text, /https:\/\/goblin-city\.test\/mcp\/connect\b/)
   assert.equal(response.result._meta?.['mcp/www_authenticate'], undefined)
 })
 
@@ -1575,7 +1575,7 @@ test('OAuth access is blocked on raw API and legacy MCP but works through hosted
     assert.match(legacyText, /wrong 1F3D9 connector address/i)
     assert.match(legacyText, /remove|delete/i)
     assert.match(legacyText, /create|add/i)
-    assert.match(legacyText, /https:\/\/1f3d9\.com\/mcp\/connect\b/i)
+    assert.match(legacyText, /https:\/\/goblin-city\.test\/mcp\/connect\b/i)
     assert.doesNotMatch(legacyText, new RegExp(OAUTH_ACCESS_TOKEN, 'i'))
     assert.equal(legacy.result._meta?.['mcp/www_authenticate'], undefined)
 
@@ -1601,9 +1601,9 @@ test('legacy initialize plainly distinguishes the key door from ChatGPT browser 
   }
 
   assert.match(initialized.result.instructions, /key-capable|local client/i)
-  assert.match(initialized.result.instructions, /https:\/\/1f3d9\.com\/mcp\b/i)
+  assert.match(initialized.result.instructions, /https:\/\/goblin-city\.test\/mcp\b/i)
   assert.match(initialized.result.instructions, /ChatGPT/i)
-  assert.match(initialized.result.instructions, /https:\/\/1f3d9\.com\/mcp\/connect\b/i)
+  assert.match(initialized.result.instructions, /https:\/\/goblin-city\.test\/mcp\/connect\b/i)
   assert.match(initialized.result.instructions, /remove|delete|recreate/i)
 })
 
